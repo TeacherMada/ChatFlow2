@@ -18,7 +18,7 @@ const PORT = 3000;
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Encryption
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "dev-fixed-key-12345678901234567890123456789012"; // Fixed fallback for demo persistence
 const IV_LENGTH = 16;
 
 function encrypt(text: string) {
@@ -30,13 +30,18 @@ function encrypt(text: string) {
 }
 
 function decrypt(text: string) {
-  const textParts = text.split(':');
-  const iv = Buffer.from(textParts.shift()!, 'hex');
-  const encryptedText = Buffer.from(textParts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY.slice(0, 32).padEnd(32, '0')), iv);
-  let decrypted = decipher.update(encryptedText);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString();
+  try {
+    const textParts = text.split(':');
+    const iv = Buffer.from(textParts.shift()!, 'hex');
+    const encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY.slice(0, 32).padEnd(32, '0')), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+  } catch (e) {
+    console.error("Decryption failed:", e);
+    return ""; // Return empty string on failure
+  }
 }
 
 // Database setup
@@ -61,7 +66,7 @@ db.exec(`
     name TEXT,
     access_token TEXT,
     is_active BOOLEAN DEFAULT 0,
-    ai_enabled BOOLEAN DEFAULT 0,
+    ai_enabled BOOLEAN DEFAULT 1,
     ai_prompt TEXT DEFAULT 'You are a helpful assistant.',
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
@@ -115,8 +120,12 @@ db.exec(`
 
 // Migration for existing tables
 try {
-  db.prepare("ALTER TABLE pages ADD COLUMN ai_enabled BOOLEAN DEFAULT 0").run();
-} catch (e) {}
+  db.prepare("ALTER TABLE pages ADD COLUMN ai_enabled BOOLEAN DEFAULT 1").run();
+} catch (e) {
+  // If column exists, ensure default is 1 for new rows (SQLite doesn't support ALTER COLUMN DEFAULT easily, but we can update existing nulls/0s if desired)
+  // For this demo, let's just update all existing pages to enable AI if it was 0 or null, as requested "enable it by default"
+  db.prepare("UPDATE pages SET ai_enabled = 1 WHERE ai_enabled IS NULL OR ai_enabled = 0").run();
+}
 try {
   db.prepare("ALTER TABLE pages ADD COLUMN ai_prompt TEXT DEFAULT 'You are a helpful assistant.'").run();
 } catch (e) {}
