@@ -6,12 +6,16 @@ import { v4 as uuidv4 } from "uuid";
 import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
+import { GoogleGenAI } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
+
+// Initialize Gemini
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Encryption
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
@@ -57,6 +61,8 @@ db.exec(`
     name TEXT,
     access_token TEXT,
     is_active BOOLEAN DEFAULT 0,
+    ai_enabled BOOLEAN DEFAULT 0,
+    ai_prompt TEXT DEFAULT 'You are a helpful assistant.',
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 
@@ -65,6 +71,7 @@ db.exec(`
     page_id TEXT,
     name TEXT,
     is_active BOOLEAN DEFAULT 0,
+    is_default BOOLEAN DEFAULT 0,
     nodes TEXT,
     edges TEXT,
     FOREIGN KEY (page_id) REFERENCES pages(id)
@@ -105,6 +112,17 @@ db.exec(`
     UNIQUE(page_id, fb_user_id, key)
   );
 `);
+
+// Migration for existing tables
+try {
+  db.prepare("ALTER TABLE pages ADD COLUMN ai_enabled BOOLEAN DEFAULT 0").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE pages ADD COLUMN ai_prompt TEXT DEFAULT 'You are a helpful assistant.'").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE flows ADD COLUMN is_default BOOLEAN DEFAULT 0").run();
+} catch (e) {}
 
 app.use(cors());
 
@@ -379,15 +397,22 @@ app.get("/webhook", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   const body = req.body;
+  console.log("WEBHOOK_RECEIVED", JSON.stringify(body));
   
   if (body.object === "page") {
     for (const entry of body.entry) {
       const pageId = entry.id;
       const page = db.prepare("SELECT * FROM pages WHERE fb_page_id = ? AND is_active = 1").get(pageId) as any;
-      if (!page) continue;
+      if (!page) {
+        console.log(`Page ${pageId} not found or not active.`);
+        continue;
+      }
 
       const user = db.prepare("SELECT * FROM users WHERE id = ?").get(page.user_id) as any;
-      if (!user) continue;
+      if (!user) {
+        console.log(`User for page ${pageId} not found.`);
+        continue;
+      }
 
       const limits: any = { 'Starter': 1000, 'Business': 10000, 'Pro': 100000 };
       if (user.message_count >= (limits[user.plan] || 1000)) {
@@ -409,6 +434,7 @@ app.post("/webhook", async (req, res) => {
         }
 
         if (messageText) {
+          console.log(`Processing message from ${senderId}: ${messageText}`);
           // Check Keywords
           const keywords = db.prepare("SELECT * FROM keywords WHERE page_id = ?").all(page.id) as any[];
           let matchedFlowId = null;
@@ -420,23 +446,48 @@ app.post("/webhook", async (req, res) => {
             } else if (kw.match_type === 'regex') {
               try {
                 const re = new RegExp(kw.keyword, 'i');
-                if (re.test(messageText)) { matchedFlowId = kw.flow_id; break; }
+                if (re.test(messageText)) { matchedFlowId = kw.flow_id; break;
+                }
               } catch(e) {}
             }
           }
 
           let flow;
           if (matchedFlowId) {
+            console.log(`Keyword matched: ${matchedFlowId}`);
             flow = db.prepare("SELECT * FROM flows WHERE id = ?").get(matchedFlowId) as any;
             db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
           } else {
-            flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_active = 1 LIMIT 1").get(page.id) as any;
+            // Check for active conversation
+            const conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
+            if (conversation) {
+              console.log(`Continuing conversation: ${conversation.id}`);
+              const allFlows = db.prepare("SELECT * FROM flows WHERE page_id = ?").all(page.id) as any[];
+              flow = allFlows.find(f => {
+                const nodes = JSON.parse(f.nodes || '[]');
+                return nodes.some((n: any) => n.id === conversation.state);
+              });
+            } else {
+              // No active conversation.
+              // Try Default Flow
+              console.log("No active conversation. Checking default flow.");
+              flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1 AND is_active = 1").get(page.id) as any;
+              
+              if (!flow && page.ai_enabled) {
+                console.log("No default flow. Using AI.");
+                await processAIResponse(page, user, senderId, messageText);
+                continue;
+              }
+            }
           }
 
           if (flow) {
+            console.log(`Processing flow: ${flow.id}`);
             const nodes = JSON.parse(flow.nodes || '[]');
             const edges = JSON.parse(flow.edges || '[]');
             await processFlow(page, user, senderId, messageText, nodes, edges);
+          } else {
+             console.log("No flow found.");
           }
         }
       }
@@ -446,6 +497,23 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(404);
   }
 });
+
+async function processAIResponse(page: any, user: any, senderId: string, messageText: string) {
+  try {
+    const prompt = `${page.ai_prompt}\n\nUser: ${messageText}\nAssistant:`;
+    
+    const response = await genAI.models.generateContent({
+      model: "gemini-2.5-flash-latest",
+      contents: prompt,
+    });
+    const text = response.text;
+    
+    await sendMetaMessage(page.access_token, senderId, { text });
+    db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
+  } catch (err) {
+    console.error("AI Error:", err);
+  }
+}
 
 async function processFlow(page: any, user: any, senderId: string, messageText: string, nodes: any[], edges: any[]) {
   let conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
@@ -511,6 +579,9 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
       currentNodeId = nextNode.id;
       break; // Stop and wait for user input
+    } else if (nextNode.type === 'ai_response') {
+      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText);
+      currentNodeId = nextNode.id;
     } else {
       currentNodeId = nextNode.id;
     }

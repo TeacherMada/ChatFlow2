@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones } from 'lucide-react';
+import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones, BrainCircuit, Save } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { templates } from '../data/templates';
 
@@ -11,10 +11,17 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [view, setView] = useState<'flows' | 'settings'>('flows');
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
 
   useEffect(() => {
     fetchPages();
   }, []);
+
+  useEffect(() => {
+    if (selectedPage) {
+      setAiPrompt(selectedPage.ai_prompt || 'You are a helpful assistant.');
+    }
+  }, [selectedPage]);
 
   const fetchPages = async () => {
     const res = await fetch(`/api/pages?userId=${user.id}`);
@@ -51,6 +58,31 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
       if (selectedPage?.id === pageId) {
         setSelectedPage({ ...selectedPage, is_active: !selectedPage.is_active });
       }
+    }
+  };
+
+  const handleToggleAI = async (enabled: boolean) => {
+    const res = await fetch(`/api/pages/${selectedPage.id}/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ai_enabled: enabled, ai_prompt: aiPrompt })
+    });
+    if (res.ok) {
+      setSelectedPage({ ...selectedPage, ai_enabled: enabled });
+      fetchPages();
+    }
+  };
+
+  const handleSaveAIPrompt = async () => {
+    const res = await fetch(`/api/pages/${selectedPage.id}/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ai_enabled: selectedPage.ai_enabled, ai_prompt: aiPrompt })
+    });
+    if (res.ok) {
+      setSelectedPage({ ...selectedPage, ai_prompt: aiPrompt });
+      fetchPages();
+      alert('AI Settings Saved!');
     }
   };
 
@@ -333,6 +365,52 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+              {/* AI Settings Section */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-violet-100 flex items-center justify-center text-violet-600">
+                      <BrainCircuit className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-900">AI Assistant</h3>
+                      <p className="text-sm text-gray-500">Enable AI to handle unmatched messages</p>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      className="sr-only peer" 
+                      checked={selectedPage.ai_enabled || false}
+                      onChange={(e) => handleToggleAI(e.target.checked)}
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                  </label>
+                </div>
+                
+                {selectedPage.ai_enabled && (
+                  <div className="mt-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">System Prompt</label>
+                    <textarea
+                      value={aiPrompt}
+                      onChange={(e) => setAiPrompt(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
+                      rows={3}
+                      placeholder="You are a helpful assistant..."
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        onClick={handleSaveAIPrompt}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700"
+                      >
+                        <Save className="w-4 h-4" />
+                        Save Prompt
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                 <h3 className="text-lg font-medium text-gray-900">Chat Flows</h3>
                 <button

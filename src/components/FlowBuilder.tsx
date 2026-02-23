@@ -12,7 +12,7 @@ import {
   Position,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ArrowLeft, Save, MessageSquare, HelpCircle, GitBranch, Zap, Play, Menu, X, Keyboard, Image as ImageIcon, List, MousePointerClick, Database, Tag, Settings, Trash2, Plus } from 'lucide-react';
+import { ArrowLeft, Save, MessageSquare, HelpCircle, GitBranch, Zap, Play, Menu, X, Keyboard, Image as ImageIcon, List, MousePointerClick, Database, Tag, Settings, Trash2, Plus, BrainCircuit } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const nodeTypes = {
@@ -39,6 +39,19 @@ const nodeTypes = {
         <p className="text-sm text-gray-600">{data.label}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-gray-400" />
+    </div>
+  ),
+  ai_response: ({ data }: any) => (
+    <div className="bg-white border-2 border-violet-500 rounded-lg shadow-sm w-64">
+      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-violet-500" />
+      <div className="bg-violet-50 p-3 rounded-t-md border-b border-violet-100 flex items-center gap-2">
+        <BrainCircuit className="w-4 h-4 text-violet-600" />
+        <span className="font-semibold text-sm text-violet-900">AI Response</span>
+      </div>
+      <div className="p-4">
+        <p className="text-sm text-gray-600 italic line-clamp-2">{data.prompt || "Use user's message"}</p>
+      </div>
+      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-violet-500" />
     </div>
   ),
   condition: ({ data }: any) => (
@@ -293,6 +306,11 @@ export default function FlowBuilder({ flow, onBack }: any) {
       if (tag !== null) {
         setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, tag } } : n));
       }
+    } else if (node.type === 'ai_response') {
+      const promptText = prompt('Enter System Prompt (leave empty to use default):', node.data.prompt);
+      if (promptText !== null) {
+        setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, prompt: promptText } } : n));
+      }
     } else {
       const newLabel = prompt('Enter new text:', node.data.label);
       if (newLabel) {
@@ -495,6 +513,16 @@ export default function FlowBuilder({ flow, onBack }: any) {
         <div>
           <p className="text-sm font-medium text-gray-900">Add Tag</p>
           <p className="text-xs text-gray-500">Segment users</p>
+        </div>
+      </button>
+
+      <button onClick={() => addNode('ai_response')} className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:border-violet-500 hover:bg-violet-50 transition-all text-left group">
+        <div className="w-8 h-8 rounded-md bg-gray-100 flex items-center justify-center group-hover:bg-violet-100 group-hover:text-violet-600 text-gray-600">
+          <BrainCircuit className="w-4 h-4" />
+        </div>
+        <div>
+          <p className="text-sm font-medium text-gray-900">AI Response</p>
+          <p className="text-xs text-gray-500">Generate reply with AI</p>
         </div>
       </button>
       
