@@ -320,6 +320,14 @@ app.post("/api/pages/:id/ai", (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/api/pages/:id/ai-config", (req, res) => {
+  const pageId = req.params.id;
+  const { openai_keys, anthropic_keys, gemini_keys } = req.body;
+  const config = JSON.stringify({ openai_keys, anthropic_keys, gemini_keys });
+  db.prepare("UPDATE pages SET ai_config = ? WHERE id = ?").run(config, pageId);
+  res.json({ success: true });
+});
+
 // --- FLOWS ROUTES ---
 app.get("/api/pages/:pageId/flows", (req, res) => {
   const pageId = req.params.pageId;
