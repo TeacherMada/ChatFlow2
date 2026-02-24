@@ -291,7 +291,26 @@ app.post("/api/pages/sync", async (req, res) => {
       }
     }
 
-    const updatedPages = db.prepare("SELECT id, user_id, fb_page_id, name, is_active FROM pages WHERE user_id = ?").all(userId);
+    const updatedPages = db.prepare("SELECT id, user_id, fb_page_id, name, is_active, ai_enabled, ai_prompt, ai_config FROM pages WHERE user_id = ?").all(userId) as any[];
+    
+    // Create Default AI Flow for new pages
+    for (const page of updatedPages) {
+      const existingFlow = db.prepare("SELECT id FROM flows WHERE page_id = ?").get(page.id);
+      if (!existingFlow) {
+        const flowId = uuidv4();
+        const nodes = JSON.stringify([
+          { id: '1', type: 'start', position: { x: 250, y: 5 }, data: { label: 'Start' } },
+          { id: '2', type: 'ai_response', position: { x: 250, y: 150 }, data: { label: 'AI Assistant', model: 'gemini-3-flash-preview', prompt: 'You are a helpful assistant.' } }
+        ]);
+        const edges = JSON.stringify([
+          { id: 'e1-2', source: '1', target: '2', type: 'smoothstep' }
+        ]);
+        
+        db.prepare("INSERT INTO flows (id, page_id, name, is_active, is_default, nodes, edges) VALUES (?, ?, ?, 1, 1, ?, ?)").run(flowId, page.id, 'Default AI Assistant', nodes, edges);
+        console.log(`[Sync] Created default AI flow for page: ${page.name}`);
+      }
+    }
+
     res.json({ pages: updatedPages });
   } catch (error: any) {
     console.error("Sync Pages Error:", error);
@@ -715,24 +734,23 @@ async function callLLM(provider: string, model: string, messages: any[], systemI
     const ai = new GoogleGenAI({ apiKey });
     
     // Convert messages to Gemini format
-    const contents = messages.map(m => ({
+    const history = messages.slice(0, -1).map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }]
     }));
 
-    try {
-      const response = await ai.models.generateContent({
-        model: model || "gemini-3-flash-preview",
-        contents: contents,
-        config: {
-          systemInstruction: systemInstruction,
-        }
-      });
-      return response.text;
-    } catch (error) {
-      console.error("Gemini API Error:", error);
-      throw error;
-    }
+    const chat = ai.chats.create({
+      model: model || "gemini-3-flash-preview",
+      config: {
+        systemInstruction: systemInstruction,
+        maxOutputTokens: 1000,
+      },
+      history: history,
+    });
+
+    const lastMsg = messages[messages.length - 1].content;
+    const result = await chat.sendMessage({ message: lastMsg });
+    return result.text;
   } 
   
   // Placeholder for OpenAI (requires fetch implementation since no SDK)
