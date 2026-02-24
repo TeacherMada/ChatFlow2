@@ -245,7 +245,7 @@ app.get("/api/auth/facebook/callback", async (req, res) => {
 app.get("/api/pages", (req, res) => {
   const userId = req.query.userId;
   if (!userId) return res.status(400).json({ error: "Missing userId" });
-  const pages = db.prepare("SELECT id, user_id, fb_page_id, name, is_active FROM pages WHERE user_id = ?").all(userId);
+  const pages = db.prepare("SELECT id, user_id, fb_page_id, name, is_active, ai_enabled, ai_prompt, ai_config FROM pages WHERE user_id = ?").all(userId);
   res.json({ pages });
 });
 
@@ -261,7 +261,7 @@ app.post("/api/pages/sync", async (req, res) => {
 
     if (pagesData.error) throw new Error(pagesData.error.message);
 
-    const stmt = db.prepare("INSERT INTO pages (id, user_id, fb_page_id, name, access_token, is_active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(fb_page_id) DO UPDATE SET name = excluded.name, access_token = excluded.access_token");
+    const stmt = db.prepare("INSERT INTO pages (id, user_id, fb_page_id, name, access_token, is_active, ai_enabled) VALUES (?, ?, ?, ?, ?, 1, 1) ON CONFLICT(fb_page_id) DO UPDATE SET name = excluded.name, access_token = excluded.access_token");
     
     const insertMany = db.transaction((pages) => {
       for (const page of pages) {
@@ -712,28 +712,27 @@ async function callLLM(provider: string, model: string, messages: any[], systemI
   console.log(`[AI] Calling ${provider} (${model}) with key: ${apiKey ? '***' + apiKey.slice(-4) : 'DEFAULT'}`);
 
   if (provider === 'google') {
-    const genAI = new GoogleGenAI({ apiKey });
-    const aiModel = genAI.getGenerativeModel({ 
-      model: model || "gemini-3-flash-preview",
-      systemInstruction: systemInstruction
-    });
+    const ai = new GoogleGenAI({ apiKey });
     
     // Convert messages to Gemini format
-    const history = messages.slice(0, -1).map(m => ({
+    const contents = messages.map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }]
     }));
 
-    const chat = aiModel.startChat({
-      history: history,
-      generationConfig: {
-        maxOutputTokens: 1000,
-      },
-    });
-
-    const lastMsg = messages[messages.length - 1].content;
-    const result = await chat.sendMessage(lastMsg);
-    return result.response.text;
+    try {
+      const response = await ai.models.generateContent({
+        model: model || "gemini-3-flash-preview",
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+        }
+      });
+      return response.text;
+    } catch (error) {
+      console.error("Gemini API Error:", error);
+      throw error;
+    }
   } 
   
   // Placeholder for OpenAI (requires fetch implementation since no SDK)
