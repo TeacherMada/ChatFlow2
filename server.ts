@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import cors from "cors";
@@ -270,6 +271,17 @@ app.post("/api/pages/:id/toggle", (req, res) => {
   res.json({ success: true, is_active: newStatus });
 });
 
+app.post("/api/pages/:id/ai", (req, res) => {
+  const pageId = req.params.id;
+  const { ai_enabled, ai_prompt } = req.body;
+  
+  const page = db.prepare("SELECT * FROM pages WHERE id = ?").get(pageId);
+  if (!page) return res.status(404).json({ error: "Page not found" });
+
+  db.prepare("UPDATE pages SET ai_enabled = ?, ai_prompt = ? WHERE id = ?").run(ai_enabled ? 1 : 0, ai_prompt, pageId);
+  res.json({ success: true });
+});
+
 // --- FLOWS ROUTES ---
 app.get("/api/pages/:pageId/flows", (req, res) => {
   const pageId = req.params.pageId;
@@ -406,31 +418,41 @@ app.get("/webhook", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   const body = req.body;
-  console.log("WEBHOOK_RECEIVED", JSON.stringify(body));
+  console.log("WEBHOOK_RECEIVED", JSON.stringify(body, null, 2));
   
   if (body.object === "page") {
     for (const entry of body.entry) {
       const pageId = entry.id;
-      const page = db.prepare("SELECT * FROM pages WHERE fb_page_id = ? AND is_active = 1").get(pageId) as any;
+      
+      // Fetch page without is_active check first to debug
+      const page = db.prepare("SELECT * FROM pages WHERE fb_page_id = ?").get(pageId) as any;
+      
       if (!page) {
-        console.log(`Page ${pageId} not found or not active.`);
+        console.error(`[Webhook] Page ${pageId} not found in DB.`);
+        continue;
+      }
+      
+      if (!page.is_active) {
+        console.warn(`[Webhook] Page ${page.name} (${pageId}) is INACTIVE. Ignoring message.`);
         continue;
       }
 
       const user = db.prepare("SELECT * FROM users WHERE id = ?").get(page.user_id) as any;
       if (!user) {
-        console.log(`User for page ${pageId} not found.`);
+        console.error(`[Webhook] User for page ${pageId} not found.`);
         continue;
       }
 
+      // Check message limits
       const limits: any = { 'Starter': 1000, 'Business': 10000, 'Pro': 100000 };
       if (user.message_count >= (limits[user.plan] || 1000)) {
-        console.log(`User ${user.id} reached message limit.`);
+        console.warn(`[Webhook] User ${user.id} reached message limit.`);
         continue;
       }
 
       for (const webhook_event of entry.messaging) {
         const senderId = webhook_event.sender.id;
+        console.log(`[Webhook] Processing event from sender: ${senderId}`);
         
         let messageText = "";
         if (webhook_event.message && !webhook_event.message.is_echo) {
@@ -440,63 +462,84 @@ app.post("/webhook", async (req, res) => {
           }
         } else if (webhook_event.postback) {
           messageText = webhook_event.postback.payload;
+          console.log(`[Webhook] Received postback: ${messageText}`);
         }
 
         if (messageText) {
-          console.log(`Processing message from ${senderId}: ${messageText}`);
-          // Check Keywords
+          console.log(`[Webhook] Message text: "${messageText}"`);
+          
+          // 1. Check Keywords
           const keywords = db.prepare("SELECT * FROM keywords WHERE page_id = ?").all(page.id) as any[];
           let matchedFlowId = null;
+          
           for (const kw of keywords) {
             if (kw.match_type === 'exact' && messageText.toLowerCase() === kw.keyword.toLowerCase()) {
-              matchedFlowId = kw.flow_id; break;
+              matchedFlowId = kw.flow_id; 
+              console.log(`[Webhook] Keyword Match (Exact): ${kw.keyword}`);
+              break;
             } else if (kw.match_type === 'contains' && messageText.toLowerCase().includes(kw.keyword.toLowerCase())) {
-              matchedFlowId = kw.flow_id; break;
+              matchedFlowId = kw.flow_id; 
+              console.log(`[Webhook] Keyword Match (Contains): ${kw.keyword}`);
+              break;
             } else if (kw.match_type === 'regex') {
               try {
                 const re = new RegExp(kw.keyword, 'i');
-                if (re.test(messageText)) { matchedFlowId = kw.flow_id; break;
+                if (re.test(messageText)) { 
+                  matchedFlowId = kw.flow_id; 
+                  console.log(`[Webhook] Keyword Match (Regex): ${kw.keyword}`);
+                  break; 
                 }
-              } catch(e) {}
+              } catch(e) {
+                console.error(`[Webhook] Invalid Regex for keyword ${kw.keyword}:`, e);
+              }
             }
           }
 
           let flow;
           if (matchedFlowId) {
-            console.log(`Keyword matched: ${matchedFlowId}`);
             flow = db.prepare("SELECT * FROM flows WHERE id = ?").get(matchedFlowId) as any;
+            // Reset conversation state on keyword match to start fresh
             db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
           } else {
-            // Check for active conversation
+            // 2. Check for active conversation state
             const conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
+            
             if (conversation) {
-              console.log(`Continuing conversation: ${conversation.id}`);
+              console.log(`[Webhook] Continuing conversation: ${conversation.id}, State: ${conversation.state}`);
+              // Try to find the flow containing the current node
               const allFlows = db.prepare("SELECT * FROM flows WHERE page_id = ?").all(page.id) as any[];
               flow = allFlows.find(f => {
                 const nodes = JSON.parse(f.nodes || '[]');
                 return nodes.some((n: any) => n.id === conversation.state);
               });
-            } else {
-              // No active conversation.
-              // Try Default Flow
-              console.log("No active conversation. Checking default flow.");
-              flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1 AND is_active = 1").get(page.id) as any;
               
-              if (!flow && page.ai_enabled) {
-                console.log("No default flow. Using AI.");
-                await processAIResponse(page, user, senderId, messageText);
-                continue;
+              if (!flow) {
+                 console.warn(`[Webhook] Conversation state ${conversation.state} not found in any flow. Resetting.`);
+                 db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
               }
+            } 
+            
+            if (!flow) {
+              // 3. Try Default Flow
+              console.log("[Webhook] No active conversation. Checking default flow.");
+              flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1 AND is_active = 1").get(page.id) as any;
             }
           }
 
           if (flow) {
-            console.log(`Processing flow: ${flow.id}`);
+            console.log(`[Webhook] Processing flow: ${flow.name} (${flow.id})`);
             const nodes = JSON.parse(flow.nodes || '[]');
             const edges = JSON.parse(flow.edges || '[]');
             await processFlow(page, user, senderId, messageText, nodes, edges);
           } else {
-             console.log("No flow found.");
+            // 4. Fallback to AI if enabled
+            if (page.ai_enabled) {
+              console.log("[Webhook] No flow matched. Using AI.");
+              await processAIResponse(page, user, senderId, messageText);
+            } else {
+              console.log("[Webhook] No flow matched and AI disabled. No response sent.");
+              // Optional: Send a generic fallback message if configured
+            }
           }
         }
       }
@@ -509,18 +552,21 @@ app.post("/webhook", async (req, res) => {
 
 async function processAIResponse(page: any, user: any, senderId: string, messageText: string) {
   try {
-    const prompt = `${page.ai_prompt}\n\nUser: ${messageText}\nAssistant:`;
+    console.log(`[AI] Generating response for: "${messageText}"`);
+    const prompt = `${page.ai_prompt || 'You are a helpful assistant.'}\n\nUser: ${messageText}\nAssistant:`;
     
     const response = await genAI.models.generateContent({
-      model: "gemini-2.5-flash-latest",
+      model: "gemini-3-flash-preview",
       contents: prompt,
     });
     const text = response.text;
+    console.log(`[AI] Response generated: "${text}"`);
     
     await sendMetaMessage(page.access_token, senderId, { text });
     db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
   } catch (err) {
-    console.error("AI Error:", err);
+    console.error("[AI] Error:", err);
+    await sendMetaMessage(page.access_token, senderId, { text: "I'm having trouble thinking right now. Please try again later." });
   }
 }
 
@@ -529,33 +575,50 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
   let currentNodeId = null;
 
   if (!conversation) {
+    // Start of flow
     const triggerNode = nodes.find((n: any) => n.type === 'trigger');
-    if (!triggerNode) return;
+    if (!triggerNode) {
+      console.error("[Flow] No trigger node found in flow.");
+      return;
+    }
     currentNodeId = triggerNode.id;
+    console.log(`[Flow] Starting new conversation at node: ${currentNodeId}`);
     db.prepare("INSERT INTO conversations (id, page_id, fb_user_id, state) VALUES (?, ?, ?, ?)").run(uuidv4(), page.id, senderId, currentNodeId);
   } else {
     currentNodeId = conversation.state;
   }
 
   let loopCount = 0;
+  // Process nodes until we hit a wait state (input) or end
   while (loopCount < 20) {
     loopCount++;
+    console.log(`[Flow] Processing node: ${currentNodeId}`);
+    
+    // Find next node based on current node and message (if applicable)
+    // For the first node (trigger) or after an action, we usually just follow the edge.
+    // For input nodes, we check the message.
+    
     const nextNodeId = getNextNodeForMessage(currentNodeId, nodes, edges, messageText);
-    if (!nextNodeId) break;
+    
+    if (!nextNodeId) {
+      console.log(`[Flow] No next node found from ${currentNodeId}. Ending flow.`);
+      break;
+    }
 
     const nextNode = nodes.find((n: any) => n.id === nextNodeId);
     if (!nextNode) break;
+    
+    currentNodeId = nextNode.id; // Move to next node
+    console.log(`[Flow] Moved to node: ${nextNode.type} (${nextNode.id})`);
 
     if (nextNode.type === 'message') {
       await sendMetaMessage(page.access_token, senderId, { text: nextNode.data.label });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      currentNodeId = nextNode.id;
     } else if (nextNode.type === 'image') {
       await sendMetaMessage(page.access_token, senderId, {
         attachment: { type: "image", payload: { url: nextNode.data.url || "https://picsum.photos/400/300", is_reusable: true } }
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      currentNodeId = nextNode.id;
     } else if (nextNode.type === 'quick_replies') {
       const replies = nextNode.data.replies || ['Yes', 'No'];
       const quickReplies = replies.map((r: string) => ({ content_type: "text", title: r, payload: r }));
@@ -564,7 +627,6 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
         quick_replies: quickReplies
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      currentNodeId = nextNode.id;
       break; // Wait for input
     } else if (nextNode.type === 'buttons') {
       const buttons = (nextNode.data.buttons || ['Click Here']).map((b: string) => ({ type: "postback", title: b, payload: b }));
@@ -575,30 +637,22 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
         }
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      currentNodeId = nextNode.id;
       break; // Wait for input
     } else if (nextNode.type === 'set_variable') {
       db.prepare("INSERT INTO user_variables (id, page_id, fb_user_id, key, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(page_id, fb_user_id, key) DO UPDATE SET value = excluded.value").run(uuidv4(), page.id, senderId, nextNode.data.key, nextNode.data.value);
-      currentNodeId = nextNode.id;
     } else if (nextNode.type === 'add_tag') {
       db.prepare("INSERT OR IGNORE INTO user_tags (id, page_id, fb_user_id, tag) VALUES (?, ?, ?, ?)").run(uuidv4(), page.id, senderId, nextNode.data.tag);
-      currentNodeId = nextNode.id;
     } else if (nextNode.type === 'input') {
       await sendMetaMessage(page.access_token, senderId, { text: nextNode.data.label });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      currentNodeId = nextNode.id;
       break; // Stop and wait for user input
     } else if (nextNode.type === 'ai_response') {
       await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText);
-      currentNodeId = nextNode.id;
-    } else {
-      currentNodeId = nextNode.id;
     }
   }
 
-  if (currentNodeId !== (conversation?.state || null)) {
-    db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
-  }
+  // Update conversation state
+  db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
 }
 
 function getNextNodeForMessage(currentNodeId: string, nodes: any[], edges: any[], messageText: string) {
@@ -620,8 +674,13 @@ function getNextNodeForMessage(currentNodeId: string, nodes: any[], edges: any[]
 async function sendMetaMessage(encryptedToken: string, recipientId: string, messagePayload: any) {
   try {
     const token = decrypt(encryptedToken);
+    if (!token) {
+      console.error("[Meta API] Decryption failed for access token. Page needs reconnection.");
+      return;
+    }
+    
     const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -630,8 +689,14 @@ async function sendMetaMessage(encryptedToken: string, recipientId: string, mess
         messaging_type: "RESPONSE"
       })
     });
+    const data = await res.json();
+    if (data.error) {
+       console.error("[Meta API] Error sending message:", JSON.stringify(data.error));
+    } else {
+       console.log("[Meta API] Message sent successfully.");
+    }
   } catch (err) {
-    console.error("Failed to send message:", err);
+    console.error("[Meta API] Failed to send message:", err);
   }
 }
 
