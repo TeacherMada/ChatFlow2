@@ -160,7 +160,7 @@ app.use(express.json());
 app.get("/api/auth/facebook/url", (req, res) => {
   const redirectUri = `${process.env.APP_URL}/api/auth/facebook/callback`;
   const clientId = process.env.META_CLIENT_ID;
-  const scopes = "pages_show_list,pages_messaging,pages_manage_metadata";
+  const scopes = "pages_show_list,pages_messaging,pages_manage_metadata,pages_read_engagement";
   const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code`;
   res.json({ url });
 });
@@ -241,7 +241,7 @@ app.post("/api/pages/sync", async (req, res) => {
 
     if (pagesData.error) throw new Error(pagesData.error.message);
 
-    const stmt = db.prepare("INSERT INTO pages (id, user_id, fb_page_id, name, access_token) VALUES (?, ?, ?, ?, ?) ON CONFLICT(fb_page_id) DO UPDATE SET name = excluded.name, access_token = excluded.access_token");
+    const stmt = db.prepare("INSERT INTO pages (id, user_id, fb_page_id, name, access_token, is_active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(fb_page_id) DO UPDATE SET name = excluded.name, access_token = excluded.access_token");
     
     const insertMany = db.transaction((pages) => {
       for (const page of pages) {
@@ -251,6 +251,24 @@ app.post("/api/pages/sync", async (req, res) => {
 
     if (pagesData.data) {
       insertMany(pagesData.data);
+      
+      // Subscribe to pages after DB insertion
+      for (const page of pagesData.data) {
+        try {
+          console.log(`[Sync] Subscribing app to page: ${page.name} (${page.id})`);
+          const subRes = await fetch(`https://graph.facebook.com/v19.0/${page.id}/subscribed_apps?subscribed_fields=messages,messaging_postbacks,messaging_optins,message_deliveries,message_reads&access_token=${page.access_token}`, {
+            method: 'POST'
+          });
+          const subData = await subRes.json();
+          if (subData.success) {
+             console.log(`[Sync] Successfully subscribed to page: ${page.name}`);
+          } else {
+             console.error(`[Sync] Failed to subscribe to page ${page.name}:`, JSON.stringify(subData));
+          }
+        } catch (e) {
+          console.error(`[Sync] Error subscribing to page ${page.name}:`, e);
+        }
+      }
     }
 
     const updatedPages = db.prepare("SELECT id, user_id, fb_page_id, name, is_active FROM pages WHERE user_id = ?").all(userId);
