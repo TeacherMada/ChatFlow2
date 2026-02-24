@@ -102,6 +102,7 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
+  const [apiKeys, setApiKeys] = useState({ openai: '', anthropic: '', gemini: '' });
 
   useEffect(() => {
     fetchPages();
@@ -110,8 +111,43 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
   useEffect(() => {
     if (selectedPage) {
       setAiPrompt(selectedPage.ai_prompt || 'You are a helpful assistant.');
+      if (selectedPage.ai_config) {
+        try {
+          const config = JSON.parse(selectedPage.ai_config);
+          setApiKeys({
+            openai: config.openai_keys || '',
+            anthropic: config.anthropic_keys || '',
+            gemini: config.gemini_keys || ''
+          });
+        } catch (e) {
+          console.error("Error parsing AI config", e);
+        }
+      } else {
+        setApiKeys({ openai: '', anthropic: '', gemini: '' });
+      }
     }
   }, [selectedPage]);
+
+  const handleSaveApiKeys = async () => {
+    if (!selectedPage) return;
+    try {
+      const res = await fetch(`/api/pages/${selectedPage.id}/ai-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          openai_keys: apiKeys.openai,
+          anthropic_keys: apiKeys.anthropic,
+          gemini_keys: apiKeys.gemini
+        })
+      });
+      if (res.ok) {
+        alert('API Keys saved successfully!');
+        fetchPages(); // Refresh page data
+      }
+    } catch (err) {
+      console.error("Failed to save API keys", err);
+    }
+  };
 
   const fetchPages = async () => {
     const res = await fetch(`/api/pages?userId=${user.id}`);
@@ -578,49 +614,101 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
                 </div>
               ) : activeTab === 'settings' ? (
                 /* AI Settings Section */
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-violet-100 flex items-center justify-center text-violet-600">
-                        <BrainCircuit className="w-5 h-5" />
+                <div className="space-y-6">
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-violet-100 flex items-center justify-center text-violet-600">
+                          <BrainCircuit className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-medium text-gray-900">AI Assistant</h3>
+                          <p className="text-sm text-gray-500">Enable AI to handle unmatched messages</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          className="sr-only peer" 
+                          checked={selectedPage.ai_enabled || false}
+                          onChange={(e) => handleToggleAI(e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                      </label>
+                    </div>
+                    
+                    {selectedPage.ai_enabled && (
+                      <div className="mt-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Default System Prompt</label>
+                        <textarea
+                          value={aiPrompt}
+                          onChange={(e) => setAiPrompt(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
+                          rows={3}
+                          placeholder="You are a helpful assistant..."
+                        />
+                        <div className="mt-2 flex justify-end">
+                          <button
+                            onClick={handleSaveAIPrompt}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700"
+                          >
+                            <Save className="w-4 h-4" />
+                            Save Prompt
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* API Keys Configuration */}
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">AI Provider Keys</h3>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Configure API keys for external providers. Separate multiple keys with commas for rotation.
+                      Gemini is provided by default, but you can add your own keys for higher limits.
+                    </p>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">OpenAI API Keys (GPT-4, GPT-3.5)</label>
+                        <input
+                          type="password"
+                          value={apiKeys.openai}
+                          onChange={(e) => setApiKeys({ ...apiKeys, openai: e.target.value })}
+                          placeholder="sk-..., sk-..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                        />
                       </div>
                       <div>
-                        <h3 className="text-lg font-medium text-gray-900">AI Assistant</h3>
-                        <p className="text-sm text-gray-500">Enable AI to handle unmatched messages</p>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Anthropic API Keys (Claude 3)</label>
+                        <input
+                          type="password"
+                          value={apiKeys.anthropic}
+                          onChange={(e) => setApiKeys({ ...apiKeys, anthropic: e.target.value })}
+                          placeholder="sk-ant-..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                        />
                       </div>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input 
-                        type="checkbox" 
-                        className="sr-only peer" 
-                        checked={selectedPage.ai_enabled || false}
-                        onChange={(e) => handleToggleAI(e.target.checked)}
-                      />
-                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
-                    </label>
-                  </div>
-                  
-                  {selectedPage.ai_enabled && (
-                    <div className="mt-4">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">System Prompt</label>
-                      <textarea
-                        value={aiPrompt}
-                        onChange={(e) => setAiPrompt(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
-                        rows={3}
-                        placeholder="You are a helpful assistant..."
-                      />
-                      <div className="mt-2 flex justify-end">
-                        <button
-                          onClick={handleSaveAIPrompt}
-                          className="flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700"
+                       <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Google Gemini API Keys</label>
+                        <input
+                          type="password"
+                          value={apiKeys.gemini}
+                          onChange={(e) => setApiKeys({ ...apiKeys, gemini: e.target.value })}
+                          placeholder="AIza..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                        />
+                      </div>
+                      <div className="flex justify-end">
+                        <button 
+                          onClick={handleSaveApiKeys}
+                          className="px-4 py-2 bg-gray-900 text-white rounded-md text-sm hover:bg-gray-800"
                         >
-                          <Save className="w-4 h-4" />
-                          Save Prompt
+                          Save Keys
                         </button>
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               ) : (
                 /* Flows Tab Content */

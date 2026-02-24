@@ -62,8 +62,9 @@ const nodeTypes = {
     <div className="bg-white border-2 border-violet-500 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-violet-500" />
       <NodeHeader id={id} label="AI Response" icon={BrainCircuit} color="violet" />
-      <div className="p-4">
-        <p className="text-sm text-gray-600 italic line-clamp-2">{data.prompt || "Use user's message"}</p>
+      <div className="p-4 space-y-2">
+        <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider">{data.model || 'Gemini Flash'}</p>
+        <p className="text-sm text-gray-600 italic line-clamp-3">{data.systemPrompt || "Default Assistant"}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-violet-500" />
     </div>
@@ -158,6 +159,8 @@ const FlowBuilderContent = ({ flow, onBack }: any) => {
   const [isSaving, setIsSaving] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<any>(null);
+  const [isAINodeSettingsOpen, setIsAINodeSettingsOpen] = useState(false);
   const [keywords, setKeywords] = useState<any[]>([]);
   const [newKeyword, setNewKeyword] = useState('');
   const [matchType, setMatchType] = useState('exact');
@@ -258,6 +261,12 @@ const FlowBuilderContent = ({ flow, onBack }: any) => {
   };
 
   const onNodeDoubleClick = (event: React.MouseEvent, node: any) => {
+    if (node.type === 'ai_response') {
+      setSelectedNode(node);
+      setIsAINodeSettingsOpen(true);
+      return;
+    }
+    
     if (node.type === 'image') {
       const url = prompt('Enter Image URL:', node.data.url);
       if (url !== null) {
@@ -318,6 +327,12 @@ const FlowBuilderContent = ({ flow, onBack }: any) => {
         );
       }
     }
+  };
+
+  const updateAINode = (data: any) => {
+    setNodes((nds) => nds.map((n) => n.id === selectedNode.id ? { ...n, data: { ...n.data, ...data } } : n));
+    setIsAINodeSettingsOpen(false);
+    setSelectedNode(null);
   };
 
   const handleDeleteSelected = () => {
@@ -544,6 +559,104 @@ const FlowBuilderContent = ({ flow, onBack }: any) => {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
+      {/* AI Node Settings Modal */}
+      <AnimatePresence>
+        {isAINodeSettingsOpen && selectedNode && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="p-6 border-b border-gray-200 flex items-center justify-between bg-violet-50">
+                <div>
+                  <h2 className="text-xl font-bold text-violet-900 flex items-center gap-2">
+                    <BrainCircuit className="w-6 h-6" />
+                    AI Node Configuration
+                  </h2>
+                  <p className="text-sm text-violet-600">Configure model, prompt, and context</p>
+                </div>
+                <button onClick={() => setIsAINodeSettingsOpen(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="p-6 overflow-y-auto space-y-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">AI Model</label>
+                  <select
+                    defaultValue={selectedNode.data.model || 'gemini-3-flash-preview'}
+                    onChange={(e) => updateAINode({ model: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500"
+                  >
+                    <optgroup label="Google Gemini">
+                      <option value="gemini-3-flash-preview">Gemini 3 Flash (Fastest)</option>
+                      <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Reasoning)</option>
+                      <option value="gemini-2.5-flash-latest">Gemini 2.5 Flash</option>
+                    </optgroup>
+                    <optgroup label="OpenAI (Requires Key)">
+                      <option value="gpt-4o">GPT-4o</option>
+                      <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                      <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                    </optgroup>
+                    <optgroup label="Anthropic (Requires Key)">
+                      <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                      <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
+                      <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">System Instruction / Role</label>
+                  <textarea
+                    defaultValue={selectedNode.data.systemPrompt || ''}
+                    onBlur={(e) => updateAINode({ systemPrompt: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
+                    placeholder="You are a helpful support agent for a shoe store..."
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Defines the persona and rules for the AI.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Knowledge Base (Context)</label>
+                  <textarea
+                    defaultValue={selectedNode.data.knowledgeBase || ''}
+                    onBlur={(e) => updateAINode({ knowledgeBase: e.target.value })}
+                    rows={5}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm font-mono"
+                    placeholder="Paste relevant business info, FAQs, or product details here..."
+                  />
+                  <p className="mt-1 text-xs text-gray-500">This text will be injected into the context window.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Fallback Message</label>
+                  <input
+                    type="text"
+                    defaultValue={selectedNode.data.fallbackMessage || "I'm having trouble thinking right now."}
+                    onBlur={(e) => updateAINode({ fallbackMessage: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Sent if the AI fails to generate a response.</p>
+                </div>
+              </div>
+
+              <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+                <button
+                  onClick={() => setIsAINodeSettingsOpen(false)}
+                  className="px-4 py-2 bg-violet-600 text-white rounded-md hover:bg-violet-700 font-medium"
+                >
+                  Done
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Settings Modal */}
       <AnimatePresence>
         {isSettingsOpen && (

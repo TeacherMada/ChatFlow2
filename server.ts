@@ -665,13 +665,95 @@ async function handleIncomingMessage(page: any, user: any, senderId: string, mes
   }
 }
 
-async function processAIResponse(page: any, user: any, senderId: string, messageText: string, channel: string = 'messenger') {
+async function callLLM(provider: string, model: string, messages: any[], systemInstruction: string, config: any) {
+  // Key Rotation Logic
+  let apiKey = process.env.GEMINI_API_KEY; // Default
+  
+  if (config && config.api_keys && config.api_keys[provider]) {
+    const keys = config.api_keys[provider].split(',').map((k: string) => k.trim()).filter((k: string) => k);
+    if (keys.length > 0) {
+      apiKey = keys[Math.floor(Math.random() * keys.length)]; // Random rotation
+    }
+  }
+
+  if (provider === 'google') {
+    const genAI = new GoogleGenAI({ apiKey });
+    const aiModel = genAI.getGenerativeModel({ 
+      model: model || "gemini-3-flash-preview",
+      systemInstruction: systemInstruction
+    });
+    
+    // Convert messages to Gemini format
+    const history = messages.slice(0, -1).map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }]
+    }));
+
+    const chat = aiModel.startChat({
+      history: history,
+      generationConfig: {
+        maxOutputTokens: 1000,
+      },
+    });
+
+    const lastMsg = messages[messages.length - 1].content;
+    const result = await chat.sendMessage(lastMsg);
+    return result.response.text;
+  } 
+  
+  // Placeholder for OpenAI (requires fetch implementation since no SDK)
+  if (provider === 'openai') {
+    if (!apiKey) throw new Error("OpenAI API Key not configured");
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model || 'gpt-4o',
+        messages: [
+          { role: 'system', content: systemInstruction },
+          ...messages
+        ]
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.choices[0].message.content;
+  }
+
+  // Placeholder for Anthropic
+  if (provider === 'anthropic') {
+    if (!apiKey) throw new Error("Anthropic API Key not configured");
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: model || 'claude-3-opus-20240229',
+        system: systemInstruction,
+        messages: messages
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.content[0].text;
+  }
+
+  throw new Error(`Provider ${provider} not supported`);
+}
+
+async function processAIResponse(page: any, user: any, senderId: string, messageText: string, channel: string = 'messenger', nodeConfig: any = {}) {
   try {
     console.log(`[AI] Generating response for: "${messageText}"`);
     
     // Fetch conversation history (last 10 messages)
     const history = db.prepare("SELECT role, content FROM messages WHERE page_id = ? AND fb_user_id = ? ORDER BY created_at DESC LIMIT 10").all(page.id, senderId) as any[];
-    const historyText = history.reverse().map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
+    const formattedHistory = history.reverse().map(m => ({ role: m.role, content: m.content }));
     
     // Fetch User Variables
     const variables = db.prepare("SELECT key, value FROM user_variables WHERE page_id = ? AND fb_user_id = ?").all(page.id, senderId) as any[];
@@ -681,24 +763,39 @@ async function processAIResponse(page: any, user: any, senderId: string, message
     const tags = db.prepare("SELECT tag FROM user_tags WHERE page_id = ? AND fb_user_id = ?").all(page.id, senderId) as any[];
     const tagsText = tags.map(t => t.tag).join(', ');
 
+    // Context Construction
     let context = "";
     if (variables.length > 0) context += `\nUser Variables:\n${variablesText}`;
     if (tags.length > 0) context += `\nUser Tags: ${tagsText}`;
+    if (nodeConfig.knowledgeBase) context += `\nKnowledge Base:\n${nodeConfig.knowledgeBase}`;
+
+    const systemInstruction = `${nodeConfig.systemPrompt || page.ai_prompt || 'You are a helpful assistant.'}\n${context}`;
     
-    const prompt = `${page.ai_prompt || 'You are a helpful assistant.'}${context}\n\nConversation History:\n${historyText}\n\nUser: ${messageText}\nAssistant:`;
-    
-    const response = await genAI.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    const text = response.text;
+    // Determine Provider and Model
+    const selectedModel = nodeConfig.model || 'gemini-3-flash-preview';
+    let provider = 'google';
+    if (selectedModel.startsWith('gpt')) provider = 'openai';
+    if (selectedModel.startsWith('claude')) provider = 'anthropic';
+
+    // Parse Page AI Config
+    const pageAiConfig = page.ai_config ? JSON.parse(page.ai_config) : {};
+
+    // Prepare messages for LLM
+    const messages = [...formattedHistory, { role: 'user', content: messageText }];
+
+    const text = await callLLM(provider, selectedModel, messages, systemInstruction, pageAiConfig);
     console.log(`[AI] Response generated: "${text}"`);
     
     await sendMessage(channel, page, senderId, { text });
     db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
   } catch (err) {
     console.error("[AI] Error:", err);
-    await sendMessage(channel, page, senderId, { text: "I'm having trouble thinking right now. Please try again later." });
+    // Fallback
+    if (nodeConfig.fallbackMessage) {
+       await sendMessage(channel, page, senderId, { text: nodeConfig.fallbackMessage });
+    } else {
+       await sendMessage(channel, page, senderId, { text: "I'm having trouble thinking right now. Please try again later." });
+    }
   }
 }
 
@@ -775,7 +872,7 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
       break; // Stop and wait for user input
     } else if (nextNode.type === 'ai_response') {
-      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText, channel);
+      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText, channel, nextNode.data);
     }
   }
 
