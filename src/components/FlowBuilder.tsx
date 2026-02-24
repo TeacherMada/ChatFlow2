@@ -10,57 +10,68 @@ import {
   Panel,
   Handle,
   Position,
+  useReactFlow,
+  ReactFlowProvider,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ArrowLeft, Save, MessageSquare, HelpCircle, GitBranch, Zap, Play, Menu, X, Keyboard, Image as ImageIcon, List, MousePointerClick, Database, Tag, Settings, Trash2, Plus, BrainCircuit } from 'lucide-react';
+import { ArrowLeft, Save, MessageSquare, HelpCircle, GitBranch, Zap, Play, Menu, X, Keyboard, Image as ImageIcon, List, MousePointerClick, Database, Tag, Settings, Trash2, Plus, BrainCircuit, Undo, Redo } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const nodeTypes = {
-  trigger: ({ data }: any) => (
-    <div className="bg-white border-2 border-indigo-500 rounded-lg shadow-sm w-64">
-      <div className="bg-indigo-50 p-3 rounded-t-md border-b border-indigo-100 flex items-center gap-2">
-        <Zap className="w-4 h-4 text-indigo-600" />
-        <span className="font-semibold text-sm text-indigo-900">Trigger</span>
+const NodeHeader = ({ id, label, icon: Icon, color }: any) => {
+  const { setNodes } = useReactFlow();
+  const handleDelete = (e: any) => {
+    e.stopPropagation();
+    if (confirm('Delete this node?')) {
+      setNodes((nds) => nds.filter((n) => n.id !== id));
+    }
+  };
+  return (
+    <div className={`bg-${color}-50 p-3 rounded-t-md border-b border-${color}-100 flex items-center justify-between`}>
+      <div className="flex items-center gap-2">
+        <Icon className={`w-4 h-4 text-${color}-600`} />
+        <span className={`font-semibold text-sm text-${color}-900`}>{label}</span>
       </div>
+      <button onClick={handleDelete} className={`text-${color}-400 hover:text-red-500 p-1 rounded hover:bg-${color}-100`}>
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
+  );
+};
+
+const nodeTypes = {
+  trigger: ({ id, data }: any) => (
+    <div className="bg-white border-2 border-indigo-500 rounded-lg shadow-sm w-64">
+      <NodeHeader id={id} label="Trigger" icon={Zap} color="indigo" />
       <div className="p-4">
         <p className="text-sm text-gray-600">{data.label}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-indigo-500" />
     </div>
   ),
-  message: ({ data }: any) => (
+  message: ({ id, data }: any) => (
     <div className="bg-white border border-gray-200 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-gray-400" />
-      <div className="bg-gray-50 p-3 rounded-t-md border-b border-gray-200 flex items-center gap-2">
-        <MessageSquare className="w-4 h-4 text-gray-600" />
-        <span className="font-semibold text-sm text-gray-900">Send Message</span>
-      </div>
+      <NodeHeader id={id} label="Send Message" icon={MessageSquare} color="gray" />
       <div className="p-4">
         <p className="text-sm text-gray-600">{data.label}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-gray-400" />
     </div>
   ),
-  ai_response: ({ data }: any) => (
+  ai_response: ({ id, data }: any) => (
     <div className="bg-white border-2 border-violet-500 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-violet-500" />
-      <div className="bg-violet-50 p-3 rounded-t-md border-b border-violet-100 flex items-center gap-2">
-        <BrainCircuit className="w-4 h-4 text-violet-600" />
-        <span className="font-semibold text-sm text-violet-900">AI Response</span>
-      </div>
+      <NodeHeader id={id} label="AI Response" icon={BrainCircuit} color="violet" />
       <div className="p-4">
         <p className="text-sm text-gray-600 italic line-clamp-2">{data.prompt || "Use user's message"}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-violet-500" />
     </div>
   ),
-  condition: ({ data }: any) => (
+  condition: ({ id, data }: any) => (
     <div className="bg-white border-2 border-amber-400 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-amber-400" />
-      <div className="bg-amber-50 p-3 rounded-t-md border-b border-amber-100 flex items-center gap-2">
-        <GitBranch className="w-4 h-4 text-amber-600" />
-        <span className="font-semibold text-sm text-amber-900">Condition</span>
-      </div>
+      <NodeHeader id={id} label="Condition" icon={GitBranch} color="amber" />
       <div className="p-4">
         <p className="text-sm text-gray-600">{data.label}</p>
       </div>
@@ -68,39 +79,30 @@ const nodeTypes = {
       <Handle type="source" position={Position.Bottom} id="false" className="w-3 h-3 bg-red-500 left-3/4" />
     </div>
   ),
-  input: ({ data }: any) => (
+  input: ({ id, data }: any) => (
     <div className="bg-white border-2 border-purple-400 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-purple-400" />
-      <div className="bg-purple-50 p-3 rounded-t-md border-b border-purple-100 flex items-center gap-2">
-        <Keyboard className="w-4 h-4 text-purple-600" />
-        <span className="font-semibold text-sm text-purple-900">User Input</span>
-      </div>
+      <NodeHeader id={id} label="User Input" icon={Keyboard} color="purple" />
       <div className="p-4">
         <p className="text-sm text-gray-600 italic">"{data.label}"</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-purple-400" />
     </div>
   ),
-  image: ({ data }: any) => (
+  image: ({ id, data }: any) => (
     <div className="bg-white border border-gray-200 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-gray-400" />
-      <div className="bg-gray-50 p-3 rounded-t-md border-b border-gray-200 flex items-center gap-2">
-        <ImageIcon className="w-4 h-4 text-gray-600" />
-        <span className="font-semibold text-sm text-gray-900">Send Image</span>
-      </div>
+      <NodeHeader id={id} label="Send Image" icon={ImageIcon} color="gray" />
       <div className="p-4">
         <p className="text-sm text-gray-600 truncate">{data.url || 'No image URL'}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-gray-400" />
     </div>
   ),
-  quick_replies: ({ data }: any) => (
+  quick_replies: ({ id, data }: any) => (
     <div className="bg-white border border-blue-200 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-blue-400" />
-      <div className="bg-blue-50 p-3 rounded-t-md border-b border-blue-100 flex items-center gap-2">
-        <List className="w-4 h-4 text-blue-600" />
-        <span className="font-semibold text-sm text-blue-900">Quick Replies</span>
-      </div>
+      <NodeHeader id={id} label="Quick Replies" icon={List} color="blue" />
       <div className="p-4">
         <p className="text-sm text-gray-600 mb-2">{data.label}</p>
         <div className="flex flex-wrap gap-1">
@@ -112,13 +114,10 @@ const nodeTypes = {
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-blue-400" />
     </div>
   ),
-  buttons: ({ data }: any) => (
+  buttons: ({ id, data }: any) => (
     <div className="bg-white border border-blue-200 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-blue-400" />
-      <div className="bg-blue-50 p-3 rounded-t-md border-b border-blue-100 flex items-center gap-2">
-        <MousePointerClick className="w-4 h-4 text-blue-600" />
-        <span className="font-semibold text-sm text-blue-900">Buttons</span>
-      </div>
+      <NodeHeader id={id} label="Buttons" icon={MousePointerClick} color="blue" />
       <div className="p-4">
         <p className="text-sm text-gray-600 mb-2">{data.label}</p>
         <div className="flex flex-col gap-1">
@@ -130,26 +129,20 @@ const nodeTypes = {
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-blue-400" />
     </div>
   ),
-  set_variable: ({ data }: any) => (
+  set_variable: ({ id, data }: any) => (
     <div className="bg-white border-2 border-emerald-400 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-emerald-400" />
-      <div className="bg-emerald-50 p-3 rounded-t-md border-b border-emerald-100 flex items-center gap-2">
-        <Database className="w-4 h-4 text-emerald-600" />
-        <span className="font-semibold text-sm text-emerald-900">Set Variable</span>
-      </div>
+      <NodeHeader id={id} label="Set Variable" icon={Database} color="emerald" />
       <div className="p-4">
         <p className="text-sm text-gray-600"><span className="font-mono bg-gray-100 px-1 rounded">{data.key || 'key'}</span> = {data.value || 'value'}</p>
       </div>
       <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-emerald-400" />
     </div>
   ),
-  add_tag: ({ data }: any) => (
+  add_tag: ({ id, data }: any) => (
     <div className="bg-white border-2 border-emerald-400 rounded-lg shadow-sm w-64">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-emerald-400" />
-      <div className="bg-emerald-50 p-3 rounded-t-md border-b border-emerald-100 flex items-center gap-2">
-        <Tag className="w-4 h-4 text-emerald-600" />
-        <span className="font-semibold text-sm text-emerald-900">Add Tag</span>
-      </div>
+      <NodeHeader id={id} label="Add Tag" icon={Tag} color="emerald" />
       <div className="p-4">
         <span className="px-2 py-1 bg-emerald-100 text-emerald-800 text-xs rounded-full">{data.tag || 'new_tag'}</span>
       </div>
@@ -158,7 +151,8 @@ const nodeTypes = {
   ),
 };
 
-export default function FlowBuilder({ flow, onBack }: any) {
+const FlowBuilderContent = ({ flow, onBack }: any) => {
+  const { setNodes: setNodesRF, setEdges: setEdgesRF, getNodes, getEdges } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -322,6 +316,18 @@ export default function FlowBuilder({ flow, onBack }: any) {
             return n;
           })
         );
+      }
+    }
+  };
+
+  const handleDeleteSelected = () => {
+    const selectedNodes = getNodes().filter(n => n.selected);
+    const selectedEdges = getEdges().filter(e => e.selected);
+    
+    if (selectedNodes.length > 0 || selectedEdges.length > 0) {
+      if (confirm(`Delete ${selectedNodes.length} nodes and ${selectedEdges.length} edges?`)) {
+        setNodes((nds) => nds.filter((n) => !n.selected));
+        setEdges((eds) => eds.filter((e) => !e.selected));
       }
     }
   };
@@ -698,7 +704,20 @@ export default function FlowBuilder({ flow, onBack }: any) {
             nodeTypes={nodeTypes}
             fitView
             className="bg-gray-50"
+            deleteKeyCode={['Backspace', 'Delete']}
           >
+            <Panel position="top-left" className="flex gap-2 bg-white p-2 rounded-lg shadow-sm border border-gray-200">
+              <button className="p-2 hover:bg-gray-100 rounded text-gray-500 disabled:opacity-50" title="Undo (Coming Soon)">
+                <Undo className="w-4 h-4" />
+              </button>
+              <button className="p-2 hover:bg-gray-100 rounded text-gray-500 disabled:opacity-50" title="Redo (Coming Soon)">
+                <Redo className="w-4 h-4" />
+              </button>
+              <div className="w-px bg-gray-200 mx-1" />
+              <button onClick={handleDeleteSelected} className="p-2 hover:bg-red-50 text-gray-500 hover:text-red-600 rounded" title="Delete Selected">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </Panel>
             <Controls className="bg-white border border-gray-200 shadow-sm rounded-md m-4" />
             <MiniMap className="bg-white border border-gray-200 shadow-sm rounded-md m-4 hidden sm:block" />
             <Background color="#e5e7eb" gap={16} />
@@ -706,5 +725,13 @@ export default function FlowBuilder({ flow, onBack }: any) {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function FlowBuilder(props: any) {
+  return (
+    <ReactFlowProvider>
+      <FlowBuilderContent {...props} />
+    </ReactFlowProvider>
   );
 }

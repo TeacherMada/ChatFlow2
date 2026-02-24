@@ -89,6 +89,7 @@ db.exec(`
     fb_user_id TEXT,
     state TEXT,
     last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP,
+    channel TEXT DEFAULT 'messenger',
     FOREIGN KEY (page_id) REFERENCES pages(id)
   );
 
@@ -117,7 +118,26 @@ db.exec(`
     value TEXT,
     UNIQUE(page_id, fb_user_id, key)
   );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    page_id TEXT,
+    fb_user_id TEXT,
+    role TEXT,
+    content TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    channel TEXT DEFAULT 'messenger',
+    FOREIGN KEY (page_id) REFERENCES pages(id)
+  );
 `);
+
+// Migration for existing tables
+try {
+  db.exec("ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'messenger'");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE messages ADD COLUMN channel TEXT DEFAULT 'messenger'");
+} catch (e) {}
 
 // Migration for existing tables
 try {
@@ -390,6 +410,51 @@ app.post("/api/pages/:pageId/settings/greeting", async (req, res) => {
   }
 });
 
+// --- ANALYTICS ROUTES ---
+app.get("/api/pages/:pageId/analytics", (req, res) => {
+  const { pageId } = req.params;
+
+  try {
+    // Total Messages
+    const totalMessages = db.prepare(`
+      SELECT COUNT(*) as count 
+      FROM messages 
+      WHERE page_id = ?
+    `).get(pageId) as { count: number };
+
+    // Active Users (Unique conversations)
+    const activeUsers = db.prepare(`
+      SELECT COUNT(DISTINCT fb_user_id) as count 
+      FROM messages 
+      WHERE page_id = ?
+    `).get(pageId) as { count: number };
+
+    // Messages over time (last 7 days)
+    const messagesOverTime = db.prepare(`
+      SELECT strftime('%Y-%m-%d', created_at) as date, COUNT(*) as count
+      FROM messages
+      WHERE page_id = ? AND created_at >= date('now', '-7 days')
+      GROUP BY date
+      ORDER BY date ASC
+    `).all(pageId);
+
+    // Flows Triggered (Count of flows for this page)
+    const totalFlows = db.prepare(`
+      SELECT COUNT(*) as count FROM flows WHERE page_id = ?
+    `).get(pageId) as { count: number };
+
+    res.json({
+      totalMessages: totalMessages.count,
+      activeUsers: activeUsers.count,
+      totalFlows: totalFlows.count,
+      messagesOverTime
+    });
+  } catch (error) {
+    console.error("Error fetching analytics:", error);
+    res.status(500).json({ error: "Failed to fetch analytics" });
+  }
+});
+
 app.post("/api/pages/:pageId/settings/get_started", async (req, res) => {
   const { payload } = req.body;
   const page = db.prepare("SELECT * FROM pages WHERE id = ?").get(req.params.pageId) as any;
@@ -486,79 +551,10 @@ app.post("/webhook", async (req, res) => {
         if (messageText) {
           console.log(`[Webhook] Message text: "${messageText}"`);
           
-          // 1. Check Keywords
-          const keywords = db.prepare("SELECT * FROM keywords WHERE page_id = ?").all(page.id) as any[];
-          let matchedFlowId = null;
+          // Save user message
+          db.prepare("INSERT INTO messages (id, page_id, fb_user_id, role, content, channel) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), page.id, senderId, 'user', messageText, 'messenger');
           
-          for (const kw of keywords) {
-            if (kw.match_type === 'exact' && messageText.toLowerCase() === kw.keyword.toLowerCase()) {
-              matchedFlowId = kw.flow_id; 
-              console.log(`[Webhook] Keyword Match (Exact): ${kw.keyword}`);
-              break;
-            } else if (kw.match_type === 'contains' && messageText.toLowerCase().includes(kw.keyword.toLowerCase())) {
-              matchedFlowId = kw.flow_id; 
-              console.log(`[Webhook] Keyword Match (Contains): ${kw.keyword}`);
-              break;
-            } else if (kw.match_type === 'regex') {
-              try {
-                const re = new RegExp(kw.keyword, 'i');
-                if (re.test(messageText)) { 
-                  matchedFlowId = kw.flow_id; 
-                  console.log(`[Webhook] Keyword Match (Regex): ${kw.keyword}`);
-                  break; 
-                }
-              } catch(e) {
-                console.error(`[Webhook] Invalid Regex for keyword ${kw.keyword}:`, e);
-              }
-            }
-          }
-
-          let flow;
-          if (matchedFlowId) {
-            flow = db.prepare("SELECT * FROM flows WHERE id = ?").get(matchedFlowId) as any;
-            // Reset conversation state on keyword match to start fresh
-            db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
-          } else {
-            // 2. Check for active conversation state
-            const conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
-            
-            if (conversation) {
-              console.log(`[Webhook] Continuing conversation: ${conversation.id}, State: ${conversation.state}`);
-              // Try to find the flow containing the current node
-              const allFlows = db.prepare("SELECT * FROM flows WHERE page_id = ?").all(page.id) as any[];
-              flow = allFlows.find(f => {
-                const nodes = JSON.parse(f.nodes || '[]');
-                return nodes.some((n: any) => n.id === conversation.state);
-              });
-              
-              if (!flow) {
-                 console.warn(`[Webhook] Conversation state ${conversation.state} not found in any flow. Resetting.`);
-                 db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
-              }
-            } 
-            
-            if (!flow) {
-              // 3. Try Default Flow
-              console.log("[Webhook] No active conversation. Checking default flow.");
-              flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1 AND is_active = 1").get(page.id) as any;
-            }
-          }
-
-          if (flow) {
-            console.log(`[Webhook] Processing flow: ${flow.name} (${flow.id})`);
-            const nodes = JSON.parse(flow.nodes || '[]');
-            const edges = JSON.parse(flow.edges || '[]');
-            await processFlow(page, user, senderId, messageText, nodes, edges);
-          } else {
-            // 4. Fallback to AI if enabled
-            if (page.ai_enabled) {
-              console.log("[Webhook] No flow matched. Using AI.");
-              await processAIResponse(page, user, senderId, messageText);
-            } else {
-              console.log("[Webhook] No flow matched and AI disabled. No response sent.");
-              // Optional: Send a generic fallback message if configured
-            }
-          }
+          await handleIncomingMessage(page, user, senderId, messageText, 'messenger');
         }
       }
     }
@@ -568,10 +564,128 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-async function processAIResponse(page: any, user: any, senderId: string, messageText: string) {
+app.post("/api/webchat/message", async (req, res) => {
+  const { pageId, userId, text } = req.body;
+  const page = db.prepare("SELECT * FROM pages WHERE id = ?").get(pageId) as any;
+  if (!page) return res.status(404).json({ error: "Page not found" });
+  
+  if (!page.is_active) return res.status(400).json({ error: "Page is inactive" });
+
+  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(page.user_id) as any;
+  if (!user) return res.status(404).json({ error: "User not found" });
+  
+  // Save user message
+  db.prepare("INSERT INTO messages (id, page_id, fb_user_id, role, content, channel) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), pageId, userId, 'user', text, 'webchat');
+  
+  await handleIncomingMessage(page, user, userId, text, 'webchat');
+  
+  res.json({ success: true });
+});
+
+app.get("/api/webchat/messages", (req, res) => {
+  const { pageId, userId } = req.query;
+  if (!pageId || !userId) return res.status(400).json({ error: "Missing pageId or userId" });
+
+  const messages = db.prepare("SELECT * FROM messages WHERE page_id = ? AND fb_user_id = ? AND channel = 'webchat' ORDER BY created_at ASC").all(pageId, userId);
+  res.json(messages);
+});
+
+async function handleIncomingMessage(page: any, user: any, senderId: string, messageText: string, channel: string = 'messenger') {
+  // 1. Check Keywords
+  const keywords = db.prepare("SELECT * FROM keywords WHERE page_id = ?").all(page.id) as any[];
+  let matchedFlowId = null;
+  
+  for (const kw of keywords) {
+    if (kw.match_type === 'exact' && messageText.toLowerCase() === kw.keyword.toLowerCase()) {
+      matchedFlowId = kw.flow_id; 
+      console.log(`[${channel}] Keyword Match (Exact): ${kw.keyword}`);
+      break;
+    } else if (kw.match_type === 'contains' && messageText.toLowerCase().includes(kw.keyword.toLowerCase())) {
+      matchedFlowId = kw.flow_id; 
+      console.log(`[${channel}] Keyword Match (Contains): ${kw.keyword}`);
+      break;
+    } else if (kw.match_type === 'regex') {
+      try {
+        const re = new RegExp(kw.keyword, 'i');
+        if (re.test(messageText)) { 
+          matchedFlowId = kw.flow_id; 
+          console.log(`[${channel}] Keyword Match (Regex): ${kw.keyword}`);
+          break; 
+        }
+      } catch(e) {
+        console.error(`[${channel}] Invalid Regex for keyword ${kw.keyword}:`, e);
+      }
+    }
+  }
+
+  let flow;
+  if (matchedFlowId) {
+    flow = db.prepare("SELECT * FROM flows WHERE id = ?").get(matchedFlowId) as any;
+    // Reset conversation state on keyword match to start fresh
+    db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
+  } else {
+    // 2. Check for active conversation state
+    const conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
+    
+    if (conversation) {
+      console.log(`[${channel}] Continuing conversation: ${conversation.id}, State: ${conversation.state}`);
+      // Try to find the flow containing the current node
+      const allFlows = db.prepare("SELECT * FROM flows WHERE page_id = ?").all(page.id) as any[];
+      flow = allFlows.find(f => {
+        const nodes = JSON.parse(f.nodes || '[]');
+        return nodes.some((n: any) => n.id === conversation.state);
+      });
+      
+      if (!flow) {
+         console.warn(`[${channel}] Conversation state ${conversation.state} not found in any flow. Resetting.`);
+         db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
+      }
+    } 
+    
+    if (!flow) {
+      // 3. Try Default Flow
+      console.log(`[${channel}] No active conversation. Checking default flow.`);
+      flow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1 AND is_active = 1").get(page.id) as any;
+    }
+  }
+
+  if (flow) {
+    console.log(`[${channel}] Processing flow: ${flow.name} (${flow.id})`);
+    const nodes = JSON.parse(flow.nodes || '[]');
+    const edges = JSON.parse(flow.edges || '[]');
+    await processFlow(page, user, senderId, messageText, nodes, edges, channel);
+  } else {
+    // 4. Fallback to AI if enabled
+    if (page.ai_enabled) {
+      console.log(`[${channel}] No flow matched. Using AI.`);
+      await processAIResponse(page, user, senderId, messageText, channel);
+    } else {
+      console.log(`[${channel}] No flow matched and AI disabled. No response sent.`);
+    }
+  }
+}
+
+async function processAIResponse(page: any, user: any, senderId: string, messageText: string, channel: string = 'messenger') {
   try {
     console.log(`[AI] Generating response for: "${messageText}"`);
-    const prompt = `${page.ai_prompt || 'You are a helpful assistant.'}\n\nUser: ${messageText}\nAssistant:`;
+    
+    // Fetch conversation history (last 10 messages)
+    const history = db.prepare("SELECT role, content FROM messages WHERE page_id = ? AND fb_user_id = ? ORDER BY created_at DESC LIMIT 10").all(page.id, senderId) as any[];
+    const historyText = history.reverse().map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
+    
+    // Fetch User Variables
+    const variables = db.prepare("SELECT key, value FROM user_variables WHERE page_id = ? AND fb_user_id = ?").all(page.id, senderId) as any[];
+    const variablesText = variables.map(v => `${v.key}: ${v.value}`).join('\n');
+
+    // Fetch User Tags
+    const tags = db.prepare("SELECT tag FROM user_tags WHERE page_id = ? AND fb_user_id = ?").all(page.id, senderId) as any[];
+    const tagsText = tags.map(t => t.tag).join(', ');
+
+    let context = "";
+    if (variables.length > 0) context += `\nUser Variables:\n${variablesText}`;
+    if (tags.length > 0) context += `\nUser Tags: ${tagsText}`;
+    
+    const prompt = `${page.ai_prompt || 'You are a helpful assistant.'}${context}\n\nConversation History:\n${historyText}\n\nUser: ${messageText}\nAssistant:`;
     
     const response = await genAI.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -580,15 +694,15 @@ async function processAIResponse(page: any, user: any, senderId: string, message
     const text = response.text;
     console.log(`[AI] Response generated: "${text}"`);
     
-    await sendMetaMessage(page.access_token, senderId, { text });
+    await sendMessage(channel, page, senderId, { text });
     db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
   } catch (err) {
     console.error("[AI] Error:", err);
-    await sendMetaMessage(page.access_token, senderId, { text: "I'm having trouble thinking right now. Please try again later." });
+    await sendMessage(channel, page, senderId, { text: "I'm having trouble thinking right now. Please try again later." });
   }
 }
 
-async function processFlow(page: any, user: any, senderId: string, messageText: string, nodes: any[], edges: any[]) {
+async function processFlow(page: any, user: any, senderId: string, messageText: string, nodes: any[], edges: any[], channel: string = 'messenger') {
   let conversation = db.prepare("SELECT * FROM conversations WHERE page_id = ? AND fb_user_id = ?").get(page.id, senderId) as any;
   let currentNodeId = null;
 
@@ -601,7 +715,7 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
     }
     currentNodeId = triggerNode.id;
     console.log(`[Flow] Starting new conversation at node: ${currentNodeId}`);
-    db.prepare("INSERT INTO conversations (id, page_id, fb_user_id, state) VALUES (?, ?, ?, ?)").run(uuidv4(), page.id, senderId, currentNodeId);
+    db.prepare("INSERT INTO conversations (id, page_id, fb_user_id, state, channel) VALUES (?, ?, ?, ?, ?)").run(uuidv4(), page.id, senderId, currentNodeId, channel);
   } else {
     currentNodeId = conversation.state;
   }
@@ -611,10 +725,6 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
   while (loopCount < 20) {
     loopCount++;
     console.log(`[Flow] Processing node: ${currentNodeId}`);
-    
-    // Find next node based on current node and message (if applicable)
-    // For the first node (trigger) or after an action, we usually just follow the edge.
-    // For input nodes, we check the message.
     
     const nextNodeId = getNextNodeForMessage(currentNodeId, nodes, edges, messageText);
     
@@ -630,17 +740,17 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
     console.log(`[Flow] Moved to node: ${nextNode.type} (${nextNode.id})`);
 
     if (nextNode.type === 'message') {
-      await sendMetaMessage(page.access_token, senderId, { text: nextNode.data.label });
+      await sendMessage(channel, page, senderId, { text: nextNode.data.label });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
     } else if (nextNode.type === 'image') {
-      await sendMetaMessage(page.access_token, senderId, {
+      await sendMessage(channel, page, senderId, {
         attachment: { type: "image", payload: { url: nextNode.data.url || "https://picsum.photos/400/300", is_reusable: true } }
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
     } else if (nextNode.type === 'quick_replies') {
       const replies = nextNode.data.replies || ['Yes', 'No'];
       const quickReplies = replies.map((r: string) => ({ content_type: "text", title: r, payload: r }));
-      await sendMetaMessage(page.access_token, senderId, {
+      await sendMessage(channel, page, senderId, {
         text: nextNode.data.label,
         quick_replies: quickReplies
       });
@@ -648,7 +758,7 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
       break; // Wait for input
     } else if (nextNode.type === 'buttons') {
       const buttons = (nextNode.data.buttons || ['Click Here']).map((b: string) => ({ type: "postback", title: b, payload: b }));
-      await sendMetaMessage(page.access_token, senderId, {
+      await sendMessage(channel, page, senderId, {
         attachment: {
           type: "template",
           payload: { template_type: "button", text: nextNode.data.label, buttons: buttons.slice(0,3) }
@@ -661,11 +771,11 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
     } else if (nextNode.type === 'add_tag') {
       db.prepare("INSERT OR IGNORE INTO user_tags (id, page_id, fb_user_id, tag) VALUES (?, ?, ?, ?)").run(uuidv4(), page.id, senderId, nextNode.data.tag);
     } else if (nextNode.type === 'input') {
-      await sendMetaMessage(page.access_token, senderId, { text: nextNode.data.label });
+      await sendMessage(channel, page, senderId, { text: nextNode.data.label });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
       break; // Stop and wait for user input
     } else if (nextNode.type === 'ai_response') {
-      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText);
+      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText, channel);
     }
   }
 
@@ -687,6 +797,19 @@ function getNextNodeForMessage(currentNodeId: string, nodes: any[], edges: any[]
       const edge = edges.find((e: any) => e.source === currentNodeId);
       return edge ? edge.target : null;
   }
+}
+
+async function sendMessage(channel: string, page: any, recipientId: string, messagePayload: any) {
+  let content = "";
+  if (messagePayload.text) content = messagePayload.text;
+  else if (messagePayload.attachment) content = `[Attachment: ${messagePayload.attachment.type}]`;
+  else if (messagePayload.quick_replies) content = `${messagePayload.text} [Quick Replies: ${messagePayload.quick_replies.map((r:any)=>r.title).join(', ')}]`;
+  
+  if (channel === 'messenger') {
+    await sendMetaMessage(page.access_token, recipientId, messagePayload);
+  }
+  
+  db.prepare("INSERT INTO messages (id, page_id, fb_user_id, role, content, channel) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), page.id, recipientId, 'assistant', content, channel);
 }
 
 async function sendMetaMessage(encryptedToken: string, recipientId: string, messagePayload: any) {

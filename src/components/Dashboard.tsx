@@ -1,7 +1,95 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones, BrainCircuit, Save } from 'lucide-react';
+import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones, BrainCircuit, Save, BarChart3, PieChart } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { templates } from '../data/templates';
+
+const WebchatPreview = ({ pageId }: { pageId: string }) => {
+  const [messages, setMessages] = useState<any[]>([]);
+  const [input, setInput] = useState('');
+  const [userId] = useState(() => localStorage.getItem('webchat_user_id') || Math.random().toString(36).substr(2, 9));
+
+  useEffect(() => {
+    localStorage.setItem('webchat_user_id', userId);
+    
+    const fetchMessages = async () => {
+      try {
+        const res = await fetch(`/api/webchat/messages?pageId=${pageId}&userId=${userId}`);
+        const data = await res.json();
+        if (Array.isArray(data)) setMessages(data);
+      } catch (e) {}
+    };
+
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 2000);
+    return () => clearInterval(interval);
+  }, [pageId, userId]);
+
+  const sendMessage = async () => {
+    if (!input.trim()) return;
+    const text = input;
+    setInput('');
+    
+    // Optimistic update
+    // setMessages(prev => [...prev, { id: Date.now(), role: 'user', content: text }]);
+
+    await fetch('/api/webchat/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageId, userId, text })
+    });
+    // Fetch immediately
+    const res = await fetch(`/api/webchat/messages?pageId=${pageId}&userId=${userId}`);
+    const data = await res.json();
+    if (Array.isArray(data)) setMessages(data);
+  };
+
+  return (
+    <div className="flex flex-col h-[600px] border border-gray-200 rounded-lg shadow-sm bg-white overflow-hidden max-w-md mx-auto">
+      <div className="bg-indigo-600 p-4 text-white font-semibold flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="w-5 h-5" />
+          <span>Chat with us</span>
+        </div>
+        <span className="text-xs bg-indigo-500 px-2 py-1 rounded">Preview</span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+        {messages.map((m: any) => (
+          <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[80%] p-3 rounded-lg text-sm ${
+              m.role === 'user' 
+                ? 'bg-indigo-600 text-white rounded-br-none' 
+                : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
+            }`}>
+              {m.content}
+            </div>
+          </div>
+        ))}
+        {messages.length === 0 && (
+          <div className="text-center text-gray-400 text-sm mt-10">
+            Start a conversation...
+          </div>
+        )}
+      </div>
+      <div className="p-4 bg-white border-t border-gray-200 flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+          placeholder="Type a message..."
+          className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+        <button 
+          onClick={sendMessage}
+          className="bg-indigo-600 text-white p-2 rounded-md hover:bg-indigo-700 transition-colors"
+        >
+          <MessageSquare className="w-5 h-5" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
   const [pages, setPages] = useState<any[]>([]);
@@ -10,6 +98,8 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [view, setView] = useState<'flows' | 'settings'>('flows');
+  const [activeTab, setActiveTab] = useState<'flows' | 'analytics' | 'settings' | 'webchat'>('flows');
+  const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
 
@@ -86,10 +176,17 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
     }
   };
 
+  const fetchAnalytics = async (pageId: string) => {
+    const res = await fetch(`/api/pages/${pageId}/analytics`);
+    const data = await res.json();
+    setAnalyticsData(data);
+  };
+
   const handleSelectPage = (page: any) => {
     setSelectedPage(page);
     fetchFlows(page.id);
     setView('flows');
+    setActiveTab('flows');
     setIsSidebarOpen(false);
   };
 
@@ -355,119 +452,238 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
                 <h2 className="text-xl sm:text-2xl font-bold text-gray-900">{selectedPage.name}</h2>
                 <p className="text-sm text-gray-500 mt-1">Manage flows and settings for this page</p>
               </div>
-              <button
-                onClick={() => handleTogglePage(selectedPage.id)}
-                className={`flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors w-full sm:w-auto ${selectedPage.is_active ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-green-50 text-green-700 hover:bg-green-100'}`}
-              >
-                {selectedPage.is_active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
-                {selectedPage.is_active ? 'Deactivate Bot' : 'Activate Bot'}
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => handleTogglePage(selectedPage.id)}
+                  className={`flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors w-full sm:w-auto ${selectedPage.is_active ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-green-50 text-green-700 hover:bg-green-100'}`}
+                >
+                  {selectedPage.is_active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
+                  {selectedPage.is_active ? 'Deactivate Bot' : 'Activate Bot'}
+                </button>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div className="bg-white border-b border-gray-200 px-4 sm:px-8">
+              <div className="flex space-x-8">
+                <button
+                  onClick={() => setActiveTab('flows')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'flows' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                >
+                  Chat Flows
+                </button>
+                <button
+                  onClick={() => { setActiveTab('analytics'); fetchAnalytics(selectedPage.id); }}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'analytics' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                >
+                  Analytics
+                </button>
+                <button
+                  onClick={() => setActiveTab('webchat')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'webchat' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                >
+                  Webchat
+                </button>
+                <button
+                  onClick={() => setActiveTab('settings')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'settings' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                >
+                  Settings
+                </button>
+              </div>
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 sm:p-8">
-              {/* AI Settings Section */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-violet-100 flex items-center justify-center text-violet-600">
-                      <BrainCircuit className="w-5 h-5" />
-                    </div>
+              {activeTab === 'webchat' ? (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-semibold text-gray-900">Webchat Integration</h2>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div>
-                      <h3 className="text-lg font-medium text-gray-900">AI Assistant</h3>
-                      <p className="text-sm text-gray-500">Enable AI to handle unmatched messages</p>
+                      <h3 className="text-lg font-medium text-gray-900 mb-4">Preview</h3>
+                      <WebchatPreview pageId={selectedPage.id} />
                     </div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      className="sr-only peer" 
-                      checked={selectedPage.ai_enabled || false}
-                      onChange={(e) => handleToggleAI(e.target.checked)}
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
-                  </label>
-                </div>
-                
-                {selectedPage.ai_enabled && (
-                  <div className="mt-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">System Prompt</label>
-                    <textarea
-                      value={aiPrompt}
-                      onChange={(e) => setAiPrompt(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
-                      rows={3}
-                      placeholder="You are a helpful assistant..."
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        onClick={handleSaveAIPrompt}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700"
-                      >
-                        <Save className="w-4 h-4" />
-                        Save Prompt
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                <h3 className="text-lg font-medium text-gray-900">Chat Flows</h3>
-                <button
-                  onClick={() => setIsTemplateModalOpen(true)}
-                  className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors w-full sm:w-auto"
-                >
-                  <Plus className="w-4 h-4" />
-                  Create Flow
-                </button>
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-                {flows.map(flow => (
-                  <div key={flow.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow group relative">
-                    <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleDeleteFlow(flow.id); }}
-                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
-                        <Activity className="w-5 h-5" />
-                      </div>
-                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${flow.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
-                        {flow.is_active ? 'Active' : 'Draft'}
-                      </span>
-                    </div>
-                    <h4 className="text-lg font-semibold text-gray-900 mb-1 truncate pr-8">{flow.name}</h4>
-                    <p className="text-sm text-gray-500 mb-6">Last updated recently</p>
                     
-                    <button
-                      onClick={() => onSelectFlow(flow)}
-                      className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                    >
-                      <Edit className="w-4 h-4" />
-                      Edit Flow
-                    </button>
+                    <div className="space-y-6">
+                      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                        <h3 className="text-lg font-medium text-gray-900 mb-4">Installation</h3>
+                        <p className="text-sm text-gray-600 mb-4">
+                          Copy and paste this code into your website's HTML to add the chat widget.
+                        </p>
+                        <div className="bg-gray-900 rounded-lg p-4 relative group">
+                          <code className="text-sm text-gray-300 font-mono break-all">
+                            {`<script src="${window.location.origin}/webchat.js?pageId=${selectedPage.id}"></script>`}
+                          </code>
+                          <button 
+                            onClick={() => navigator.clipboard.writeText(`<script src="${window.location.origin}/webchat.js?pageId=${selectedPage.id}"></script>`)}
+                            className="absolute top-2 right-2 p-2 bg-gray-800 text-gray-400 rounded hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <span className="text-xs">Copy</span>
+                          </button>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-blue-50 p-6 rounded-xl border border-blue-100">
+                        <h3 className="text-lg font-medium text-blue-900 mb-2">Multi-Channel Support</h3>
+                        <p className="text-sm text-blue-700">
+                          This webchat uses the same flows and AI as your Messenger bot. 
+                          Changes made in the Flow Builder apply instantly to all channels.
+                        </p>
+                      </div>
+                    </div>
                   </div>
-                ))}
-                {flows.length === 0 && (
-                  <div className="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300">
-                    <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                    <h3 className="text-lg font-medium text-gray-900 mb-1">No flows yet</h3>
-                    <p className="text-sm text-gray-500 mb-4">Create your first chat flow to get started.</p>
+                </div>
+              ) : activeTab === 'analytics' && analyticsData ? (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-medium text-gray-500">Total Messages</h3>
+                        <MessageSquare className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <p className="text-3xl font-bold text-gray-900">{analyticsData.totalMessages}</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-medium text-gray-500">Active Users</h3>
+                        <User className="w-5 h-5 text-green-600" />
+                      </div>
+                      <p className="text-3xl font-bold text-gray-900">{analyticsData.activeUsers}</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-medium text-gray-500">Flows Triggered</h3>
+                        <Activity className="w-5 h-5 text-orange-600" />
+                      </div>
+                      <p className="text-3xl font-bold text-gray-900">{analyticsData.totalFlows}</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <h3 className="text-lg font-medium text-gray-900 mb-6">Message Activity (Last 7 Days)</h3>
+                    <div className="h-80">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analyticsData.messagesOverTime}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="date" />
+                          <YAxis />
+                          <Tooltip />
+                          <Bar dataKey="count" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              ) : activeTab === 'settings' ? (
+                /* AI Settings Section */
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-violet-100 flex items-center justify-center text-violet-600">
+                        <BrainCircuit className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-medium text-gray-900">AI Assistant</h3>
+                        <p className="text-sm text-gray-500">Enable AI to handle unmatched messages</p>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only peer" 
+                        checked={selectedPage.ai_enabled || false}
+                        onChange={(e) => handleToggleAI(e.target.checked)}
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                    </label>
+                  </div>
+                  
+                  {selectedPage.ai_enabled && (
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">System Prompt</label>
+                      <textarea
+                        value={aiPrompt}
+                        onChange={(e) => setAiPrompt(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-violet-500 focus:border-violet-500 text-sm"
+                        rows={3}
+                        placeholder="You are a helpful assistant..."
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          onClick={handleSaveAIPrompt}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700"
+                        >
+                          <Save className="w-4 h-4" />
+                          Save Prompt
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Flows Tab Content */
+                <>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <h3 className="text-lg font-medium text-gray-900">Chat Flows</h3>
                     <button
                       onClick={() => setIsTemplateModalOpen(true)}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors"
+                      className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors w-full sm:w-auto"
                     >
                       <Plus className="w-4 h-4" />
                       Create Flow
                     </button>
                   </div>
-                )}
-              </div>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+                    {flows.map(flow => (
+                      <div key={flow.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow group relative">
+                        <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleDeleteFlow(flow.id); }}
+                            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+                            <Activity className="w-5 h-5" />
+                          </div>
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${flow.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                            {flow.is_active ? 'Active' : 'Draft'}
+                          </span>
+                        </div>
+                        <h4 className="text-lg font-semibold text-gray-900 mb-1 truncate pr-8">{flow.name}</h4>
+                        <p className="text-sm text-gray-500 mb-6">Last updated recently</p>
+                        
+                        <button
+                          onClick={() => onSelectFlow(flow)}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                        >
+                          <Edit className="w-4 h-4" />
+                          Edit Flow
+                        </button>
+                      </div>
+                    ))}
+                    {flows.length === 0 && (
+                      <div className="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300">
+                        <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                        <h3 className="text-lg font-medium text-gray-900 mb-1">No flows yet</h3>
+                        <p className="text-sm text-gray-500 mb-4">Create your first chat flow to get started.</p>
+                        <button
+                          onClick={() => setIsTemplateModalOpen(true)}
+                          className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors"
+                        >
+                          <Plus className="w-4 h-4" />
+                          Create Flow
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </>
         ) : (
