@@ -709,6 +709,42 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
                       </div>
                     </div>
                   </div>
+
+                  {/* AI Test Section */}
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">Test AI Configuration</h3>
+                    <div className="flex gap-4 items-end">
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Provider / Model</label>
+                        <select id="test-provider" className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                          <option value="google:gemini-3-flash-preview">Google Gemini (Flash)</option>
+                          <option value="openai:gpt-4o">OpenAI (GPT-4o)</option>
+                          <option value="anthropic:claude-3-opus-20240229">Anthropic (Claude 3)</option>
+                        </select>
+                      </div>
+                      <button 
+                        onClick={async () => {
+                          const select = document.getElementById('test-provider') as HTMLSelectElement;
+                          const [provider, model] = select.value.split(':');
+                          try {
+                            const res = await fetch(`/api/pages/${selectedPage.id}/ai/test`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ provider, model, message: "Hello, are you working?" })
+                            });
+                            const data = await res.json();
+                            if (data.error) alert(`Error: ${data.error}`);
+                            else alert(`Success! Response: ${data.response}`);
+                          } catch (e) {
+                            alert('Test failed');
+                          }
+                        }}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700"
+                      >
+                        Test Connection
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 /* Flows Tab Content */

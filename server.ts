@@ -328,6 +328,24 @@ app.post("/api/pages/:id/ai-config", (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/api/pages/:id/ai/test", async (req, res) => {
+  const pageId = req.params.id;
+  const { provider, model, message } = req.body;
+  
+  const page = db.prepare("SELECT * FROM pages WHERE id = ?").get(pageId) as any;
+  if (!page) return res.status(404).json({ error: "Page not found" });
+
+  const pageAiConfig = page.ai_config ? JSON.parse(page.ai_config) : {};
+  
+  try {
+    const response = await callLLM(provider, model, [{ role: 'user', content: message }], "You are a helpful assistant.", pageAiConfig);
+    res.json({ response });
+  } catch (err: any) {
+    console.error("AI Test Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- FLOWS ROUTES ---
 app.get("/api/pages/:pageId/flows", (req, res) => {
   const pageId = req.params.pageId;
@@ -675,14 +693,23 @@ async function handleIncomingMessage(page: any, user: any, senderId: string, mes
 
 async function callLLM(provider: string, model: string, messages: any[], systemInstruction: string, config: any) {
   // Key Rotation Logic
-  let apiKey = process.env.GEMINI_API_KEY; // Default
+  let apiKey = process.env.GEMINI_API_KEY; // Default for Google
   
-  if (config && config.api_keys && config.api_keys[provider]) {
-    const keys = config.api_keys[provider].split(',').map((k: string) => k.trim()).filter((k: string) => k);
+  let keysString = "";
+  if (config) {
+    if (provider === 'google') keysString = config.gemini_keys;
+    if (provider === 'openai') keysString = config.openai_keys;
+    if (provider === 'anthropic') keysString = config.anthropic_keys;
+  }
+
+  if (keysString) {
+    const keys = keysString.split(',').map((k: string) => k.trim()).filter((k: string) => k);
     if (keys.length > 0) {
       apiKey = keys[Math.floor(Math.random() * keys.length)]; // Random rotation
     }
   }
+
+  console.log(`[AI] Calling ${provider} (${model}) with key: ${apiKey ? '***' + apiKey.slice(-4) : 'DEFAULT'}`);
 
   if (provider === 'google') {
     const genAI = new GoogleGenAI({ apiKey });
@@ -744,7 +771,8 @@ async function callLLM(provider: string, model: string, messages: any[], systemI
       body: JSON.stringify({
         model: model || 'claude-3-opus-20240229',
         system: systemInstruction,
-        messages: messages
+        messages: messages,
+        max_tokens: 1024
       })
     });
     const data = await res.json();
