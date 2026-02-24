@@ -396,6 +396,33 @@ app.put("/api/flows/:id", (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/api/pages/:id/flows/default", (req, res) => {
+  const pageId = req.params.id;
+  
+  // Check if default flow exists
+  const existingFlow = db.prepare("SELECT * FROM flows WHERE page_id = ? AND is_default = 1").get(pageId) as any;
+  
+  if (existingFlow) {
+    return res.json({ success: true, message: "Default flow already exists", flowId: existingFlow.id });
+  }
+
+  const flowId = uuidv4();
+  const nodes = JSON.stringify([
+    { id: '1', type: 'start', position: { x: 250, y: 5 }, data: { label: 'Start' } },
+    { id: '2', type: 'ai_response', position: { x: 250, y: 150 }, data: { label: 'AI Assistant', model: 'gemini-3-flash-preview', prompt: 'You are a helpful assistant.' } }
+  ]);
+  const edges = JSON.stringify([
+    { id: 'e1-2', source: '1', target: '2', type: 'smoothstep' }
+  ]);
+  
+  db.prepare("INSERT INTO flows (id, page_id, name, is_active, is_default, nodes, edges) VALUES (?, ?, ?, 1, 1, ?, ?)").run(flowId, pageId, 'Default AI Assistant', nodes, edges);
+  
+  // Ensure AI is enabled for the page
+  db.prepare("UPDATE pages SET ai_enabled = 1 WHERE id = ?").run(pageId);
+
+  res.json({ success: true, flowId });
+});
+
 app.delete("/api/flows/:id", (req, res) => {
   const flowId = req.params.id;
   const result = db.prepare("DELETE FROM flows WHERE id = ?").run(flowId);
@@ -858,9 +885,9 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
 
   if (!conversation) {
     // Start of flow
-    const triggerNode = nodes.find((n: any) => n.type === 'trigger');
+    const triggerNode = nodes.find((n: any) => n.type === 'trigger' || n.type === 'start');
     if (!triggerNode) {
-      console.error("[Flow] No trigger node found in flow.");
+      console.error("[Flow] No trigger/start node found in flow.");
       return;
     }
     currentNodeId = triggerNode.id;
@@ -880,6 +907,8 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
     
     if (!nextNodeId) {
       console.log(`[Flow] No next node found from ${currentNodeId}. Ending flow.`);
+      // End of flow - clear conversation so next message starts fresh
+      db.prepare("DELETE FROM conversations WHERE page_id = ? AND fb_user_id = ?").run(page.id, senderId);
       break;
     }
 
@@ -905,7 +934,9 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
         quick_replies: quickReplies
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      break; // Wait for input
+      // Update state and wait for input
+      db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
+      return; 
     } else if (nextNode.type === 'buttons') {
       const buttons = (nextNode.data.buttons || ['Click Here']).map((b: string) => ({ type: "postback", title: b, payload: b }));
       await sendMessage(channel, page, senderId, {
@@ -915,7 +946,9 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
         }
       });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      break; // Wait for input
+      // Update state and wait for input
+      db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
+      return;
     } else if (nextNode.type === 'set_variable') {
       db.prepare("INSERT INTO user_variables (id, page_id, fb_user_id, key, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(page_id, fb_user_id, key) DO UPDATE SET value = excluded.value").run(uuidv4(), page.id, senderId, nextNode.data.key, nextNode.data.value);
     } else if (nextNode.type === 'add_tag') {
@@ -923,14 +956,16 @@ async function processFlow(page: any, user: any, senderId: string, messageText: 
     } else if (nextNode.type === 'input') {
       await sendMessage(channel, page, senderId, { text: nextNode.data.label });
       db.prepare("UPDATE users SET message_count = message_count + 1 WHERE id = ?").run(user.id);
-      break; // Stop and wait for user input
+      // Update state and wait for input
+      db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
+      return;
     } else if (nextNode.type === 'ai_response') {
-      await processAIResponse(page, user, senderId, nextNode.data.prompt || messageText, channel, nextNode.data);
+      // Pass the user's messageText to the AI
+      await processAIResponse(page, user, senderId, messageText, channel, nextNode.data);
     }
   }
-
-  // Update conversation state
-  db.prepare("UPDATE conversations SET state = ?, last_interaction = CURRENT_TIMESTAMP WHERE page_id = ? AND fb_user_id = ?").run(currentNodeId, page.id, senderId);
+  
+  // If we exit the loop naturally (end of flow without wait state), we already deleted the conversation above.
 }
 
 function getNextNodeForMessage(currentNodeId: string, nodes: any[], edges: any[], messageText: string) {

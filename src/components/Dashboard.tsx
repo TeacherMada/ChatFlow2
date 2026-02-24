@@ -751,13 +751,38 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
                 <>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                     <h3 className="text-lg font-medium text-gray-900">Chat Flows</h3>
-                    <button
-                      onClick={() => setIsTemplateModalOpen(true)}
-                      className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors w-full sm:w-auto"
-                    >
-                      <Plus className="w-4 h-4" />
-                      Create Flow
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const res = await fetch(`/api/pages/${selectedPage.id}/flows/default`, { method: 'POST' });
+                            const data = await res.json();
+                            if (data.success) {
+                              alert('Default AI Flow created successfully!');
+                              // Refresh flows
+                              const flowsRes = await fetch(`/api/pages/${selectedPage.id}/flows`);
+                              const flowsData = await flowsRes.json();
+                              setFlows(flowsData.flows);
+                            } else {
+                              alert(data.message || 'Failed to create flow');
+                            }
+                          } catch (e) {
+                            alert('Error creating flow');
+                          }
+                        }}
+                        className="flex items-center justify-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-md text-sm font-medium hover:bg-violet-700 transition-colors w-full sm:w-auto"
+                      >
+                        <BrainCircuit className="w-4 h-4" />
+                        Create Default AI Flow
+                      </button>
+                      <button
+                        onClick={() => setIsTemplateModalOpen(true)}
+                        className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 transition-colors w-full sm:w-auto"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Create Flow
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
