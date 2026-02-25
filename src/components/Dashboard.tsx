@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones, BrainCircuit, Save, BarChart3, PieChart } from 'lucide-react';
+import { MessageSquare, Settings, LogOut, Plus, Activity, Power, PowerOff, Edit, Menu, X, User, Shield, Trash2, LayoutTemplate, UserPlus, Headphones, BrainCircuit, Save, BarChart3, PieChart, Facebook } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { templates } from '../data/templates';
@@ -743,6 +743,53 @@ export default function Dashboard({ user, onLogout, onSelectFlow }: any) {
                       >
                         Test Connection
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Facebook App Setup Guide */}
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
+                      <Facebook className="w-5 h-5 text-[#1877F2]" />
+                      Facebook App Setup Guide
+                    </h3>
+                    <div className="space-y-4 text-sm text-gray-600">
+                      <p>Ensure your Facebook App is configured with the following settings in the Meta Developers Portal:</p>
+                      
+                      <div className="bg-gray-50 p-4 rounded-lg space-y-3 font-mono text-xs">
+                        <div>
+                          <p className="text-gray-500 mb-1 uppercase font-bold">OAuth Redirect URI</p>
+                          <code className="bg-white p-1 border border-gray-200 rounded block">
+                            {window.location.origin}/api/auth/facebook/callback
+                          </code>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 mb-1 uppercase font-bold">Webhook URL</p>
+                          <code className="bg-white p-1 border border-gray-200 rounded block">
+                            {window.location.origin}/webhook
+                          </code>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 mb-1 uppercase font-bold">Webhook Verify Token</p>
+                          <code className="bg-white p-1 border border-gray-200 rounded block">
+                            pagebot
+                          </code>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="font-medium text-gray-900">Required Permissions:</p>
+                        <ul className="list-disc pl-5 space-y-1">
+                          <li>pages_messaging</li>
+                          <li>pages_show_list</li>
+                          <li>pages_manage_metadata</li>
+                          <li>pages_read_engagement</li>
+                        </ul>
+                      </div>
+
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+                        <p className="font-bold mb-1">Important:</p>
+                        <p>If you are in "Development Mode", only App Admins/Testers can connect. Switch to "Live Mode" for public access.</p>
+                      </div>
                     </div>
                   </div>
                 </div>

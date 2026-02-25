@@ -178,28 +178,57 @@ app.use(express.json());
 
 // --- AUTH ROUTES ---
 app.get("/api/auth/facebook/url", (req, res) => {
-  const redirectUri = `${process.env.APP_URL}/api/auth/facebook/callback`;
+  const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+  const redirectUri = `${appUrl}/api/auth/facebook/callback`;
   const clientId = process.env.META_CLIENT_ID;
+  
+  if (!clientId) {
+    console.error("[Auth] META_CLIENT_ID is missing in environment variables.");
+    return res.status(500).json({ error: "Facebook App ID (META_CLIENT_ID) is not configured." });
+  }
+
   const scopes = "pages_show_list,pages_messaging,pages_manage_metadata,pages_read_engagement";
   const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code`;
+  
+  console.log(`[Auth] Generating Login URL with redirect: ${redirectUri}`);
   res.json({ url });
 });
 
 app.get("/api/auth/facebook/callback", async (req, res) => {
-  const { code } = req.query;
-  const redirectUri = `${process.env.APP_URL}/api/auth/facebook/callback`;
+  const { code, error } = req.query;
+  
+  if (error) {
+    console.error("[Auth] Facebook returned error:", error);
+    return res.status(400).send(`Authentication failed: ${error}`);
+  }
+
+  const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+  const redirectUri = `${appUrl}/api/auth/facebook/callback`;
   const clientId = process.env.META_CLIENT_ID;
   const clientSecret = process.env.META_CLIENT_SECRET;
 
+  if (!clientId || !clientSecret) {
+    console.error("[Auth] META_CLIENT_ID or META_CLIENT_SECRET is missing.");
+    return res.status(500).send("Facebook App credentials are not configured.");
+  }
+
   try {
+    console.log(`[Auth] Exchanging code for token with redirect: ${redirectUri}`);
     const tokenRes = await fetch(`https://graph.facebook.com/v19.0/oauth/access_token?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${clientSecret}&code=${code}`);
     const tokenData = await tokenRes.json();
-    if (tokenData.error) throw new Error(tokenData.error.message);
+    
+    if (tokenData.error) {
+      console.error("[Auth] Token exchange error:", JSON.stringify(tokenData.error));
+      throw new Error(tokenData.error.message);
+    }
     
     const shortLivedToken = tokenData.access_token;
+    console.log("[Auth] Successfully obtained short-lived token");
+
     const longTokenRes = await fetch(`https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${clientId}&client_secret=${clientSecret}&fb_exchange_token=${shortLivedToken}`);
     const longTokenData = await longTokenRes.json();
     const accessToken = longTokenData.access_token || shortLivedToken;
+    console.log("[Auth] Successfully obtained long-lived token");
 
     const userRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${accessToken}`);
     const userData = await userRes.json();
